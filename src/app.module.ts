@@ -7,6 +7,8 @@ import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { AuthModule } from "./modules/auth/auth.module";
 import { BrevoModule } from "./infrastructure/integrations/brevo/brevo.module";
+import { APP_GUARD } from "@nestjs/core";
+import { JwtAuthGuard } from "./modules/common/guards/jwt-auth-guard";
 
 @Module({
   imports: [
@@ -23,6 +25,7 @@ import { BrevoModule } from "./infrastructure/integrations/brevo/brevo.module";
     BrevoModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService,{ provide: APP_GUARD, useClass: JwtAuthGuard }],
 })
 export class AppModule {}
+// { provide: APP_GUARD, useClass: JwtAuthGuard }

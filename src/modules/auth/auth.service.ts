@@ -18,6 +18,7 @@ import { JwtService } from "@nestjs/jwt";
 import { v4 as uuidv4 } from "uuid";
 import { ObjectId } from "mongodb";
 
+
 @Injectable()
 export class AuthService {
   private readonly TOKEN_EXPIRY_TIME = 1000 * 60 * 60; // 1 hour
@@ -199,6 +200,7 @@ export class AuthService {
     const payload = {
       sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
       email: dbAuth.email,
+      name: dbAuth.name,
       jid,
     };
 
@@ -341,12 +343,17 @@ export class AuthService {
    * isJidValid: used by JwtStrategy
    */
   async isJidValid(authIdStr: string, jid: string): Promise<boolean> {
+    console.log(authIdStr,jid);
     if (!authIdStr || !jid) return false;
 
-    const auth = await this.authRepo.findOne({
-      where: { _id: authIdStr } as any,
-    });
-    if (!auth) return false;
+    const whereClause: any = ObjectId.isValid(authIdStr)
+    ? { _id: new ObjectId(authIdStr) }
+    : { _id: authIdStr };
+
+    const auth = await this.authRepo.findOne({ where: whereClause});
+    if (!auth) {
+      console.log('auth not found');
+      return false;}
     return Array.isArray(auth.jids) && auth.jids.includes(jid);
   }
 

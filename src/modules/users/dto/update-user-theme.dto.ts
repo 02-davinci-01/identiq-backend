@@ -1,11 +1,11 @@
-import {IsOptional,IsString} from "class-validator"
+// import {IsOptional,IsString} from "class-validator"
 
-export class UpdateUserThemeDTO{
-    @IsOptional()
-    @IsString()
-    themeId?:string
+// export class UpdateUserThemeDTO{
+//     @IsOptional()
+//     @IsString()
+//     themeId?:string
 
-    @IsOptional()
-    @IsString()
-    colorHex?:string
-}
+//     @IsOptional()
+//     @IsString()
+//     colorHex?:string
+// }

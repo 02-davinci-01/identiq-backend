@@ -19,16 +19,21 @@ import type { Response } from "express";
 import { RegisterUserDTO } from "./dto/register-user.dto";
 import { CompleteRegisterDTO } from "./dto/complete-register.dto";
 import { LoginDto } from "./dto/login.dto";
+import { Public } from "../common/decorator/public.decorator";
 
 @Controller("auth")
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+
+  @Public()
   @Post("register")
   async registerUser(@Body() dto: RegisterUserDTO) {
     return this.authService.register(dto);
   }
 
+
+  @Public()
   @Post("complete-register")
   async complete(
     @Body() dto: CompleteRegisterDTO,
@@ -38,9 +43,12 @@ export class AuthController {
     return this.authService.completeRegisterWithEmail(token, email, password);
   }
 
-  @UseGuards(AuthGuard(["jwt", "local"]))
+  @Public()
+  @UseGuards(AuthGuard("local"))
   @Post("login")
   async login(@Req() req, @Res({ passthrough: true }) res: Response) {
+    // console.log("Access Token: ", req.headers['Authorization'].split(' ')[1])
+   
     const { accessToken, refreshToken, jid, expiresIn, user } =
       await this.authService.login(req.user);
 
@@ -90,7 +98,7 @@ export class AuthController {
     };
   }
 
-  @UseGuards(AuthGuard("jwt"))
+ 
   @Post("logout")
   async logout(
     @Req() req,
@@ -107,7 +115,7 @@ export class AuthController {
     return this.authService.logout(user.id, jid);
   }
 
-  @UseGuards(AuthGuard("jwt"))
+ 
   @Post("me")
   me(@Req() req) {
     return req.user;
