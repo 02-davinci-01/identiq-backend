@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnauthorizedException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { User } from "../users/entities/user.entity";
@@ -75,7 +76,7 @@ export class AuthService {
     // Build a friendly verify link for the HTML fallback (the Brevo service will also build one when using templates)
     const frontendURL =
       this.config.get<string>("FRONTEND_URL") ?? "http://localhost:3000";
-    const verifyLink = `${frontendURL.replace(/\/$/, "")}/complete-register?token=${rawToken}`;
+    const verifyLink = `${frontendURL.replace(/\/$/, "")}/auth/complete-register?token=${rawToken}`;
 
     const html = `
       <p>Hi ${name || "there"},</p>
@@ -190,6 +191,7 @@ export class AuthService {
     const MAX_SESSIONS = Number(this.config.get<number>("MAX_SESSIONS") || 10);
     if (dbAuth.jids.length >= MAX_SESSIONS) dbAuth.jids.shift();
 
+    // create a new jid for this session
     const jid = uuidv4();
     dbAuth.jids.push(jid);
     await this.authRepo.save(dbAuth);
@@ -200,20 +202,121 @@ export class AuthService {
       jid,
     };
 
-    // --- Fix: normalize / cast expiresIn so TS accepts the call ---
+    // normalize / cast expiresIn so TS accepts the call
     const rawExpires = this.config.get<string | number>("JWT_EXPIRES_IN");
     const expiresIn = rawExpires ?? "1h"; // fallback
 
-    // jwtService.sign overloads are strict about the options types; cast to 'any' to satisfy TS.
+    // sign access token (short-lived)
     const accessToken = this.jwtService.sign(payload, {
       expiresIn: expiresIn as any,
     });
 
+    // create refresh token (long-lived). We sign a token that contains sub and jid.
+    // Refresh TTL: use REFRESH_TOKEN_TTL env var or default to 30d
+    const rawRefreshTtl = this.config.get<string | number>("REFRESH_TOKEN_TTL");
+    const refreshTtl = rawRefreshTtl ?? "30d";
+
+    const refreshPayload = {
+      sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
+      jid, // include jid so we can validate session during refresh
+    };
+
+    const refreshToken = this.jwtService.sign(refreshPayload, {
+      expiresIn: refreshTtl as any,
+    });
+
+    // Optional: persist the refresh token in DB (or its hash) for revocation.
+    // You already persist jids; if you want extra safety you can save hashed refresh tokens.
+    // Example placeholder:
+    // if (this.saveRefreshTokenForUser) await this.saveRefreshTokenForUser(dbAuth._id, refreshToken);
+
     return {
       accessToken,
+      refreshToken,
       jid,
       expiresIn: expiresIn,
+      // optionally return user info if you want the frontend to have it immediately
+      user: {
+        id: dbAuth._id ? dbAuth._id.toString() : (dbAuth as any).id,
+        email: dbAuth.email,
+        // add other public fields if desired (name, roles, etc.)
+      },
     };
+  }
+
+  async refreshTokens(refreshToken: string) {
+    if (!refreshToken)
+      throw new UnauthorizedException("No refresh token provided");
+
+    try {
+      // verify the refresh token (will throw if invalid/expired)
+      const payload: any = this.jwtService.verify(refreshToken);
+
+      const userId = payload.sub;
+      const jid = payload.jid;
+
+      // fetch auth record and validate that jid is still present
+      const dbAuth = await this.authRepo.findOne({
+        where: { _id: userId } as any,
+      });
+
+      if (!dbAuth) throw new UnauthorizedException("Auth record not found");
+
+      if (!Array.isArray(dbAuth.jids) || !dbAuth.jids.includes(jid)) {
+        throw new UnauthorizedException("Session revoked or invalid");
+      }
+
+      // Build new access token payload (preserve jid)
+      const accessPayload = {
+        sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
+        email: dbAuth.email,
+        jid,
+      };
+
+      const accessExpiresRaw =
+        this.config.get<string | number>("JWT_EXPIRES_IN") ?? "1h";
+      const accessExpiresIn = accessExpiresRaw as any;
+
+      const newAccessToken = this.jwtService.sign(accessPayload, {
+        expiresIn: accessExpiresIn,
+      });
+
+      // Rotate refresh token (same jid kept here; if you prefer to rotate jid, generate new jid and update dbAuth.jids)
+      const refreshTtlRaw =
+        this.config.get<string | number>("REFRESH_TOKEN_TTL") ?? "30d";
+      const refreshTtl = refreshTtlRaw as any;
+
+      const newRefreshToken = this.jwtService.sign(
+        {
+          sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
+          jid,
+        },
+        { expiresIn: refreshTtl },
+      );
+
+      // Optional: persist rotated refresh token or update dbAuth.jids if rotating jid.
+      // (I left persistence of refresh tokens out so you can implement it as you prefer.)
+
+      const user = {
+        id: dbAuth._id ? dbAuth._id.toString() : (dbAuth as any).id,
+        email: dbAuth.email,
+      };
+
+      // expiresIn in seconds — convert if your config provides a string TTL you want to expose
+      const expiresIn =
+        typeof accessExpiresIn === "number" ? accessExpiresIn : 60 * 60;
+
+      return {
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+        user,
+        jid,
+        expiresIn,
+      };
+    } catch (err) {
+      // normalize errors into UnauthorizedException
+      throw new UnauthorizedException("Invalid or expired refresh token");
+    }
   }
 
   /**

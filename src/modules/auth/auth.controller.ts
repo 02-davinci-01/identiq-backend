@@ -7,9 +7,13 @@ import {
   Req,
   Headers,
   BadRequestException,
+  UnauthorizedException,
+  Res,
+  HttpCode,
 } from "@nestjs/common";
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "@nestjs/passport";
+import type { Response } from "express";
 
 // DTO imports (adjust paths)
 import { RegisterUserDTO } from "./dto/register-user.dto";
@@ -34,10 +38,56 @@ export class AuthController {
     return this.authService.completeRegisterWithEmail(token, email, password);
   }
 
-  @UseGuards(AuthGuard("local"))
+  @UseGuards(AuthGuard(["jwt", "local"]))
   @Post("login")
-  async login(@Req() req) {
-    return this.authService.login(req.user);
+  async login(@Req() req, @Res({ passthrough: true }) res: Response) {
+    const { accessToken, refreshToken, jid, expiresIn, user } =
+      await this.authService.login(req.user);
+
+    // set httpOnly refresh token cookie (long lived)
+    const cookieOptions = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax" as const,
+      maxAge: 1000 * 60 * 60 * 24 * 30, // 30 days
+      path: "/",
+    };
+
+    res.cookie("refresh_token", refreshToken, cookieOptions);
+
+    // return access token and session id and optionally user info
+    return {
+      accessToken,
+      jid,
+      expiresIn,
+      user: user ?? null,
+      message: "Login successful",
+    };
+  }
+
+  @Post("refresh")
+  async refresh(@Res({ passthrough: true }) res: Response) {
+    const refreshToken = res.req?.cookies?.["refresh_token"];
+    if (!refreshToken)
+      throw new UnauthorizedException("No refresh token provided");
+
+    // delegate to service
+    const result = await this.authService.refreshTokens(refreshToken);
+
+    // set rotated refresh cookie
+    res.cookie("refresh_token", result.refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax" as const,
+      maxAge: 1000 * 60 * 60 * 24 * 30,
+      path: "/",
+    });
+
+    return {
+      accessToken: result.accessToken,
+      user: result.user,
+      expiresIn: result.expiresIn,
+    };
   }
 
   @UseGuards(AuthGuard("jwt"))

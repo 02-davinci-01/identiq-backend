@@ -1,4 +1,5 @@
 import {
+  IsAlphanumeric,
   IsEmail,
   IsNotEmpty,
   IsString,
@@ -12,6 +13,7 @@ export class CompleteRegisterDTO {
   email: string;
 
   @Length(2, 128)
+  @IsAlphanumeric()
   @IsNotEmpty()
   password: string;
 }
