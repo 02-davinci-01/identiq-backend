@@ -8,7 +8,7 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { User } from "../users/entities/user.entity";
-import { Repository } from "typeorm";
+import { Any, Repository } from "typeorm";
 import { randomBytes } from "crypto";
 import * as bcrypt from "bcryptjs";
 import { ConfigService } from "@nestjs/config";
@@ -20,7 +20,7 @@ import { ObjectId } from "mongodb";
 import { DataSource } from 'typeorm';
 import { Theme } from "../themes/entities/theme.entity";
 import { ThemeService } from "../themes/themes.service";
-
+import axios from 'axios';
 
 
 @Injectable()
@@ -75,7 +75,7 @@ export class AuthService {
         verifyEmailTokenHash: tokenHash,
       });
     } else {
-      authUser.name = name;
+      authUser.name;
       authUser.verifyEmailTokenHash = tokenHash;
       authUser.verifyEmailExpiry = expiry;
     }
@@ -546,6 +546,141 @@ export class AuthService {
       return { ok: true, oldEmail, newEmail };
     });
   }
+
+  /////////////////////////////FORGOT PASSWORD/////////////////////////////////////////////////
+  // inside AuthService class
+// inside AuthService class — replace existing initiatePasswordReset with this
+async initiatePasswordReset(email: string) {
+  if (!email) throw new BadRequestException("Email is required");
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  // find existing auth row (may return null)
+  let authUser: any = await this.authRepo.findOne({ where: { email: normalizedEmail } as any });
+
+  // If no auth row exists, create a minimal auth record so we can attach the token
+  if (!authUser) {
+    authUser = this.authRepo.create({
+      name: undefined,
+      email: normalizedEmail,
+      emailVerified: false,
+    } as any);
+  }
+
+  // generate raw token and its hash (same as register)
+  const rawToken = this.genToken(24);
+  const tokenHash = await bcrypt.hash(rawToken, this.HASH_ROUNDS);
+  const expiry = new Date(Date.now() + this.TOKEN_EXPIRY_TIME);
+
+  // persist hash + expiry (we ensured authUser is a real entity above)
+  authUser.resetPasswordTokenHash = tokenHash;
+  authUser.resetPasswordExpiry = expiry;
+
+  // save (authUser is guaranteed non-null here)
+  await this.authRepo.save(authUser);
+
+  // Build friendly reset link that includes token & email in query (same pattern as register)
+  const frontendURL = this.config.get<string>("FRONTEND_URL") ?? "http://localhost:3000";
+  const verifyLink = `${frontendURL.replace(/\/$/, "")}/auth/forgot-password?token=${encodeURIComponent(
+    rawToken,
+  )}&email=${encodeURIComponent(normalizedEmail)}`;
+
+  // extraParams shaped exactly like register (so your Brevo template can reuse)
+  const extraParams = {
+    token: rawToken,
+    verifyLink,
+    name: authUser.name ?? "",
+    email: normalizedEmail,
+    year: String(new Date().getFullYear()),
+    templateId:"3"
+  };
+
+  try {
+    // Use new brevo helper that targets the forgot-password template env var
+    await this.brevo.sendForgotPasswordEmail(normalizedEmail, rawToken, {
+      subject: "Reset your password",
+      extraParams,
+    });
+  } catch (err) {
+    this.logger?.error("Brevo send error (forgot password)", err as any);
+    // match registration behaviour: throw friendly error (or you can return neutral)
+    throw new BadRequestException("Failed to send password reset email");
+  }
+
+  return { message: "email sent successfully", status: true };
 }
 
 
+
+/**
+ * Complete password reset (verify token + email then set new password)
+ * - email & rawToken are provided by query in the frontend link and passed into controller
+ * - we compare rawToken to the stored hash using bcrypt.compare
+ * - on success we hash new password (same HASH_ROUNDS) and persist to auth row (and user row if needed)
+ * - clear the resetPasswordTokenHash & resetPasswordExpiry fields
+ */
+// inside AuthService class
+async completePasswordResetWithEmail(email: string, rawToken: string, newPassword: string) {
+  if (!email) throw new BadRequestException("Email is required");
+  if (!rawToken) throw new BadRequestException("Token is required");
+  if (!newPassword) throw new BadRequestException("Password is required");
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  // find auth row by email
+  const authUser: any = await this.authRepo.findOne({ where: { email: normalizedEmail } as any });
+  if (!authUser) throw new NotFoundException("Invalid token or email");
+
+  const storedHash: string | undefined = authUser.resetPasswordTokenHash;
+  const expiry: Date | string | undefined = authUser.resetPasswordExpiry;
+
+  if (!storedHash || !expiry) {
+    throw new BadRequestException("Invalid token or email");
+  }
+
+  // check expiry
+  const now = new Date();
+  if (new Date(expiry) < now) {
+    throw new BadRequestException("Token expired");
+  }
+
+  // verify the token using bcrypt.compare (we stored only the hash)
+  const match = await bcrypt.compare(rawToken, storedHash);
+  if (!match) throw new BadRequestException("Invalid token");
+
+  // hash the new password (same hashing as register)
+  const newPasswordHash = await bcrypt.hash(newPassword, this.HASH_ROUNDS);
+
+  // update authUser password and clear token fields
+  if (typeof authUser.passwordHash !== "undefined") {
+    authUser.passwordHash = newPasswordHash;
+  } else {
+    authUser.password = newPasswordHash; // fallback if your entity uses 'password'
+  }
+  authUser.resetPasswordTokenHash = null;
+  authUser.resetPasswordExpiry = null;
+  authUser.emailVerified = true;
+
+  await this.authRepo.save(authUser);
+
+  // synchronize with userRepo if present
+  if (this.userRepo) {
+    try {
+      const user: any = await this.userRepo.findOne({ where: { email: normalizedEmail } as any });
+      if (user) {
+        if (typeof user.passwordHash !== "undefined") user.passwordHash = newPasswordHash;
+        else user.password = newPasswordHash;
+        user.emailVerified = true;
+        await this.userRepo.save(user);
+      }
+    } catch (err) {
+      // log but don't fail — primary auth repo updated successfully
+      this.logger?.error("Failed to sync password to userRepo", err as any);
+    }
+  }
+
+  return { message: "password updated successfully", status: true };
+}
+
+
+}

@@ -27,6 +27,8 @@ import { ChangePasswordDto } from "./dto/change-password.dto";
 import { ConfirmEmailChangeDto } from "./dto/confirm-email-change.dto";
 import { ChangeNameDto } from "./dto/change-name.dto";
 import { InitiateEmailChangeDto } from "./dto/initiate-email-change.dto";
+import { ForgotPasswordDto } from "./dto/forgot-password.dto";
+import { ResetPasswordDto } from "./dto/register-password.dto";
 
 @Controller("auth")
 export class AuthController {
@@ -213,6 +215,30 @@ export class AuthController {
     );
 
     return { stauts:true, message: 'Email updated', ...result };
+  }
+
+
+   @Public()
+   @Post('forgot-password')
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    // service returns neutral response
+    const res = await this.authService.initiatePasswordReset(dto.email);
+    return { ok: true, message: res?.message ?? 'If that email exists we have sent a reset link.' };
+  }
+
+  @Public()
+  @Post('reset-password')
+  async resetPassword(
+    @Query('token') token: string | undefined,
+    @Query('email') email: string | undefined,
+    @Body() dto: ResetPasswordDto,
+  ) {
+    if (!token || !email) {
+      return { ok: false, message: 'Missing token or email in query' };
+    }
+
+    const res = await this.authService.completePasswordResetWithEmail(email, token, dto.password);
+    return { ok: true, message: res?.message ?? 'Password updated' };
   }
 }
 

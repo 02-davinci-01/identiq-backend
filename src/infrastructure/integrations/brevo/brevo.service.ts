@@ -287,4 +287,102 @@ export class BrevoService {
       throw new Error(formatted?.message ?? "Failed to send templated email");
     }
   }
+
+  async sendForgotPasswordEmail(
+  toEmail: string,
+  token: string,
+  options?: {
+    subject?: string;
+    htmlContent?: string;
+    extraParams?: Record<string, string>;
+    // optional override: can be numeric id, template UID, or name
+    templateId?: string | number;
+  },
+) {
+  this.ensureConfigured();
+
+  // Determine requested template reference:
+  // precedence: explicit options.templateId -> env BREVO_FORGOT_TEMPLATE_ID -> default numeric 3
+  const envForgot = this.config.get<string | number>("BREVO_FORGOT_TEMPLATE_ID");
+  const requestedRef = options?.templateId ?? envForgot ?? 3;
+
+  // Resolve to a numeric template id (resolveTemplateId will call /smtp/templates if needed)
+  let resolvedTemplateId: number | undefined;
+  try {
+    resolvedTemplateId = await this.resolveTemplateId(requestedRef);
+  } catch (err: any) {
+    // If resolving fails, log and proceed to fallback behavior (htmlContent branch)
+    this.logger.warn(
+      `Failed to resolve forgot-password template ref '${String(requestedRef)}' — falling back to htmlContent if provided.`,
+    );
+    resolvedTemplateId = undefined;
+  }
+
+  // Build verifyLink exactly like sendVerificationEmail does
+  const providedParams = options?.extraParams ?? {};
+  const verifyLink =
+    providedParams.verifyLink ?? this.buildVerifyLink(token, providedParams);
+
+  // Merge params just like other sender methods
+  const params = {
+    token,
+    verifyLink,
+    ...providedParams,
+  };
+
+  // If template resolved -> send templated transactional email
+  if (resolvedTemplateId) {
+    const payload = {
+      sender: { name: this.senderName, email: this.senderEmail },
+      to: [{ email: toEmail }],
+      templateId: resolvedTemplateId,
+      params,
+    };
+
+    try {
+      const res = await this.client.post("/smtp/email", payload, {
+        headers: this.defaultHeaders(),
+      });
+      this.logger.log(
+        `Brevo: sent forgot-password template ${resolvedTemplateId} to ${toEmail} (status ${res.status})`,
+      );
+      return res.data;
+    } catch (err: any) {
+      const formatted = this.formatAxiosError(err);
+      this.logger.error("Brevo forgot-password template send failed", formatted);
+      throw new Error(formatted?.message ?? "Failed to send forgot-password templated email");
+    }
+  }
+
+  // If we reach here: no template resolved. Fallback to htmlContent behavior (must be provided).
+  if (!options?.htmlContent) {
+    this.logger.error(
+      "No transactional template resolved for forgot-password and no htmlContent provided",
+    );
+    throw new Error("No email content or template available for forgot-password");
+  }
+
+  const htmlWithLink = options.htmlContent.replace(/\{\{verifyLink\}\}/g, verifyLink);
+
+  const fallbackPayload = {
+    sender: { name: this.senderName, email: this.senderEmail },
+    to: [{ email: toEmail }],
+    subject: options?.subject ?? "Reset your password",
+    htmlContent: htmlWithLink,
+  };
+
+  try {
+    const res = await this.client.post("/smtp/email", fallbackPayload, {
+      headers: this.defaultHeaders(),
+    });
+    this.logger.log(
+      `Brevo: sent fallback forgot-password HTML to ${toEmail} (status ${res.status})`,
+    );
+    return res.data;
+  } catch (err: any) {
+    const formatted = this.formatAxiosError(err);
+    this.logger.error("Brevo forgot-password raw email send failed", formatted);
+    throw new Error(formatted?.message ?? "Failed to send forgot-password email");
+  }
+}
 }

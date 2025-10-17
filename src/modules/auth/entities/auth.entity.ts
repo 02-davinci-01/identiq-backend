@@ -30,6 +30,12 @@ export class Auth {
   @Column({ nullable: true })
   passwordHash?: string;
 
+  @Column({ nullable: true })
+  resetPasswordTokenHash?: string | null;
+
+  @Column({ nullable: true, type: 'timestamp', name: 'resetPasswordExpiry' })
+  resetPasswordExpiry?: Date | null;
+
   @Column({ type: "simple-array", nullable: true })
   jids: string[];
 }
