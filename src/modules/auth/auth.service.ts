@@ -360,7 +360,7 @@ export class AuthService {
    * isJidValid: used by JwtStrategy
    */
   async isJidValid(authIdStr: string, jid: string): Promise<boolean> {
-    console.log(authIdStr,jid);
+    
     if (!authIdStr || !jid) return false;
 
     const whereClause: any = ObjectId.isValid(authIdStr)

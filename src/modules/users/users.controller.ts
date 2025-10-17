@@ -4,10 +4,15 @@ import {
   InternalServerErrorException,
   NotFoundException,
   Logger,
+  Delete,
+  HttpCode,
+  Body,
+  BadRequestException,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CurrentUser } from '../common/decorator/current-user-decorator';
 import { UserResponseDto } from './dto/user-response-dto';
+import { DeleteUserDto } from './dto/delete-user.dto';
 
 @Controller('users')
 export class UsersController {
@@ -76,5 +81,27 @@ export class UsersController {
   async getCount() {
     const total = await this.userService.countUsers();
     return { count: total };
+  }
+
+  @Get()
+  async getAll() {
+    const users = await this.userService.getAllUsers();
+    // Normalize/shape if needed for client
+    return users.map((u) => ({
+      id: (u as any).id ?? (u as any)._id ?? null,
+      name: (u as any).name ?? '',
+      email: (u as any).email ?? '',
+      colorHex: (u as any).colorHex ?? '#c96a2b',
+      createdAt: (u as any).createdAt ?? null,
+    }));
+  }
+
+  // Delete a user by email provided in body (admin operation)
+  
+  @Delete()
+  @HttpCode(200)
+  async deleteUser(@Body() dto: DeleteUserDto) {
+    if (!dto?.email) throw new BadRequestException('Email required');
+    return await this.userService.deleteByEmail(dto.email);
   }
 }

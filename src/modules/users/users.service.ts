@@ -1,7 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './entities/user.entity';
+import { Auth } from '../auth/entities/auth.entity';
+import { Theme } from '../themes/entities/theme.entity';
+import { DataSource } from 'typeorm';
 
 @Injectable()
 export class UsersService {
@@ -10,6 +13,11 @@ export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    @InjectRepository(Auth)
+    private readonly authRepo: Repository<User>,
+    @InjectRepository(Theme)
+    private readonly themeRepo: Repository<User>,
+    private readonly dataSource: DataSource
   ) {}
 
   async checkCon(): Promise<string> {
@@ -57,6 +65,63 @@ export class UsersService {
     } catch (err) {
       this.logger.error('countUsers failed', err as any);
       throw err;
+    }
+  }
+
+  async getAllUsers() {
+    // select id, name, email, colorHex, createdAt (adjust names per your entity)
+    try {
+      const users = await this.userRepo.find({
+        select: ['id', 'name', 'email', 'colorHex', 'createdAt'] as any,
+        order: { createdAt: 'DESC' } as any,
+      });
+      return users;
+    } catch (err) {
+      this.logger.error('getAllUsers failed', err as any);
+      throw new InternalServerErrorException('Failed to fetch users');
+    }
+  }
+
+  /**
+   * Delete user by email across Auth, User and Theme repos.
+   * For SQL DBs we run a transaction to ensure atomicity.
+   * For MongoDB we perform sequential deletes (replica-set session transaction not assumed).
+   */
+  async deleteByEmail(email: string) {
+    if (!email) throw new BadRequestException('Email required');
+
+    const driver = this.dataSource.options.type;
+
+    // SQL-like databases: use transaction
+    if (driver !== 'mongodb') {
+      return await this.dataSource.transaction(async (manager) => {
+        // Use manager to perform deletes across repos atomically
+        const userRepoTx = manager.getRepository(User);
+        const authRepoTx = manager.getRepository(Auth);
+        const themeRepoTx = manager.getRepository(Theme);
+
+        // delete auth sessions/row(s) first (if you have a dedicated auth row)
+        await authRepoTx.delete({ email } as any);
+
+        // delete theme row(s)
+        await themeRepoTx.delete({ email } as any);
+
+        // delete user row
+        const res = await userRepoTx.delete({ email } as any);
+
+        return { ok: true, deletedCount: (res as any)?.affected ?? 0 };
+      });
+    }
+
+    // Mongo: sequential deletes (no transaction assumed)
+    try {
+      await this.authRepo.delete({ email } as any);
+      await this.themeRepo.delete({ email } as any);
+      const res = await this.userRepo.delete({ email } as any);
+      return { ok: true, deletedCount: (res as any)?.affected ?? (res as any)?.deletedCount ?? 0 };
+    } catch (err) {
+      this.logger.error('deleteByEmail failed', err as any);
+      throw new InternalServerErrorException('Failed to delete user');
     }
   }
 }
