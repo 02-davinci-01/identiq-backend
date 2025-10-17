@@ -10,6 +10,8 @@ import {
   UnauthorizedException,
   Res,
   HttpCode,
+  Patch,
+  Delete,
 } from "@nestjs/common";
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "@nestjs/passport";
@@ -20,6 +22,11 @@ import { RegisterUserDTO } from "./dto/register-user.dto";
 import { CompleteRegisterDTO } from "./dto/complete-register.dto";
 import { LoginDto } from "./dto/login.dto";
 import { Public } from "../common/decorator/public.decorator";
+import { CurrentUser } from "../common/decorator/current-user-decorator";
+import { ChangePasswordDto } from "./dto/change-password.dto";
+import { ConfirmEmailChangeDto } from "./dto/confirm-email-change.dto";
+import { ChangeNameDto } from "./dto/change-name.dto";
+import { InitiateEmailChangeDto } from "./dto/initiate-email-change.dto";
 
 @Controller("auth")
 export class AuthController {
@@ -120,4 +127,95 @@ export class AuthController {
   me(@Req() req) {
     return req.user;
   }
+
+
+ 
+
+
+  /**
+   * PATCH /auth/name
+   * Protected: uses token to find the user (email in token)
+   */
+  @Patch('name')
+  // @UseGuards(JwtAuthGuard)  // not required if guard is global
+  async changeName(@CurrentUser() jwt: any, @Body() dto: ChangeNameDto) {
+    const email = jwt?.email;
+    if (!email) throw new BadRequestException('No email in token');
+    if (!dto?.name) throw new BadRequestException('Missing name');
+
+    const res = await this.authService.changeName(email, dto.name);
+    return { ok: true, name: res.name, email };
+  }
+
+  /**
+   * PATCH /auth/password
+   * Protected: accepts new password in body; updates auth repo
+   */
+  @Patch('password')
+  // @UseGuards(JwtAuthGuard)
+  async changePassword(@CurrentUser() jwt: any, @Body() dto: ChangePasswordDto) {
+    const email = jwt?.email;
+    if (!email) throw new BadRequestException('No email in token');
+    if (!dto?.password) throw new BadRequestException('Missing password');
+
+    await this.authService.changePassword(email, dto.password);
+    return { ok: true, message: 'Password updated' };
+  }
+
+  /**
+   * DELETE /auth (delete account)
+   * Protected: deletes auth row and delegates removal of user & theme rows.
+   */
+  @HttpCode(200)
+  @Delete()
+  // @UseGuards(JwtAuthGuard)
+  async deleteAccount(@CurrentUser() jwt: any) {
+    const email = jwt?.email;
+    if (!email) throw new BadRequestException('No email in token');
+
+    await this.authService.deleteAccountByEmail(email);
+    return { ok: true, message: 'Account deleted' };
+  }
+
+  /**
+   * POST /auth/email  -> initiate change (sends verification to newEmail)
+   * Protected: current token required so we can ensure the requester is owner
+   */
+  @Post('email')
+  // @UseGuards(JwtAuthGuard)
+  async initiateEmailChange(@CurrentUser() jwt: any, @Body() dto: InitiateEmailChangeDto) {
+    const currentEmail = jwt?.email;
+    if (!currentEmail) throw new BadRequestException('No email in token');
+    if (!dto?.newEmail) throw new BadRequestException('Missing newEmail');
+
+    const r = await this.authService.initiateEmailChange(currentEmail, dto.newEmail);
+    return r;
+  }
+
+  /**
+   * POST /auth/email/confirm?token=...
+   * Complete the change: token in query, newEmail and optional password in body.
+   * This endpoint performs updates to auth, user and theme repos transactionally.
+   */
+  @Post('email/confirm')
+  // this route is intentionally public (confirmation link usually doesn't include a JWT).
+  async confirmEmailChange(
+    @Query('token') token: string,
+    @Body() body: ConfirmEmailChangeDto,
+  ) {
+    if (!token) throw new BadRequestException('Missing token in query');
+    if (!body?.email) throw new BadRequestException('Missing email in body');
+
+    const result = await this.authService.completeEmailChangeTransactional(
+      token,
+      body.email,
+      body.password,
+    );
+
+    return { stauts:true, message: 'Email updated', ...result };
+  }
 }
+
+
+  
+

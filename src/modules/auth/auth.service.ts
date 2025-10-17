@@ -17,6 +17,10 @@ import { Auth } from "./entities/auth.entity";
 import { JwtService } from "@nestjs/jwt";
 import { v4 as uuidv4 } from "uuid";
 import { ObjectId } from "mongodb";
+import { DataSource } from 'typeorm';
+import { Theme } from "../themes/entities/theme.entity";
+import { ThemeService } from "../themes/themes.service";
+
 
 
 @Injectable()
@@ -25,13 +29,17 @@ export class AuthService {
   private readonly HASH_ROUNDS = 10;
   private readonly PASSWORD_HASH_ROUNDS = 12;
   private readonly logger = new Logger(AuthService.name);
+  
 
   constructor(
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     @InjectRepository(Auth) private readonly authRepo: Repository<Auth>,
+    @InjectRepository(Theme) private readonly themeRepo: Repository<Auth>,
     private readonly config: ConfigService,
     private readonly brevo: BrevoService,
     private readonly jwtService: JwtService,
+    private readonly dataSource:DataSource,
+    private readonly themeService:ThemeService
   ) {}
 
   private genToken(len = 24) {
@@ -145,6 +153,15 @@ export class AuthService {
     authUser.verifyEmailExpiry = null;
 
     await this.authRepo.save(authUser);
+
+
+    
+    try {
+  await this.themeService.createDefaultForEmail(authUser.email);
+} catch (err) {
+  // if theme creation fails, log but do not block registration (optional)
+  this.logger.error('Failed to initialize default theme for user', err);
+}
 
     return { ok: true };
   }
@@ -370,4 +387,165 @@ export class AuthService {
     if (!auth) throw new NotFoundException("Auth record not found");
     return bcrypt.compare(plainPassword, (auth as any).passwordHash || "");
   }
+
+ 
+
+  /** Change name: update Auth.name and User.name (keeps both in sync) */
+  async changeName(email: string, newName: string) {
+    if (!email || !newName) throw new BadRequestException('Missing params');
+
+    // update auth repo
+    const auth = await this.authRepo.findOne({ where: { email } as any });
+    if (!auth) throw new NotFoundException('Auth record not found');
+    (auth as any).name = newName;
+    await this.authRepo.save(auth);
+
+    // update user repo if exists
+    const user = await this.userRepo.findOne({ where: { email } as any });
+    if (user) {
+      (user as any).name = newName;
+      await this.userRepo.save(user);
+    }
+
+    // return canonical newName
+    return { name: newName };
+  }
+
+  /** Change password: update auth password hash */
+  async changePassword(email: string, newPassword: string) {
+    if (!email || !newPassword) throw new BadRequestException('Missing params');
+
+    const auth = await this.authRepo.findOne({ where: { email } as any });
+    if (!auth) throw new NotFoundException('Auth record not found');
+
+    const hash = await bcrypt.hash(newPassword, this.PASSWORD_HASH_ROUNDS);
+    (auth as any).passwordHash = hash;
+    await this.authRepo.save(auth);
+
+    return { ok: true };
+  }
+
+  /** Delete account: remove auth, user and theme rows (transactional) */
+  async deleteAccountByEmailTransactional(email: string) {
+    if (!email) throw new BadRequestException('Missing email');
+
+    return await this.dataSource.transaction(async (manager) => {
+      // delete themes
+      await manager.getRepository(Theme).delete({ email } as any);
+      // delete user
+      await manager.getRepository(User).delete({ email } as any);
+      // delete auth
+      await manager.getRepository(Auth).delete({ email } as any);
+
+      // optionally: invalidate sessions / jids etc.
+      return { ok: true };
+    });
+  }
+
+  /** Convenience wrapper used by controller */
+  async deleteAccountByEmail(email: string) {
+    return this.deleteAccountByEmailTransactional(email);
+  }
+
+  /**
+   * Initiate email change:
+   * - set pendingNewEmail, pendingEmailTokenHash, pendingEmailExpiry on Auth
+   * - send verification email to newEmail (use your existing brevo/email util)
+   */
+  async initiateEmailChange(currentEmail: string, newEmail: string) {
+    if (!currentEmail || !newEmail) throw new BadRequestException('Missing params');
+
+    const auth = await this.authRepo.findOne({ where: { email: currentEmail } as any });
+    if (!auth) throw new NotFoundException('Auth record not found');
+
+    const rawToken = this.genToken();
+    const tokenHash = await bcrypt.hash(rawToken, this.PASSWORD_HASH_ROUNDS);
+    const expiry = new Date(Date.now() + this.TOKEN_EXPIRY_TIME);
+
+    (auth as any).pendingNewEmail = newEmail;
+    (auth as any).pendingEmailTokenHash = tokenHash;
+    (auth as any).pendingEmailExpiry = expiry;
+    await this.authRepo.save(auth);
+
+    // send verification email to newEmail using your email helper (brevo)
+    // build verify URL to your frontend confirm page (example)
+    const frontend = process.env.FRONTEND_URL ?? 'http://localhost:3000';
+    const verifyUrl = `${frontend.replace(/\/$/, '')}/auth/confirm-email-change?token=${rawToken}&email=${encodeURIComponent(newEmail)}`;
+
+    try {
+      // use your existing email send helper (adapt method name)
+      // this.brevo.sendVerificationEmail(newEmail, rawToken, { verifyUrl });
+      // If your project uses a different signature, adapt the call accordingly.
+      this.logger.log(`Would send verify email to ${newEmail} with link ${verifyUrl}`);
+    } catch (err) {
+      // rollback pending fields if mail failed
+      (auth as any).pendingNewEmail = null;
+      (auth as any).pendingEmailTokenHash = null;
+      (auth as any).pendingEmailExpiry = null;
+      await this.authRepo.save(auth);
+      throw new BadRequestException('Failed to send verification email');
+    }
+
+    return { ok: true, message: 'verification sent' };
+  }
+
+  /**
+   * Complete email change (transactional update across Auth, User, Theme)
+   * - token: raw token from query (string)
+   * - newEmail: the email being confirmed
+   * - password?: optional new password to set on auth
+   */
+  async completeEmailChangeTransactional(token: string, newEmail: string, password?: string) {
+    if (!token || !newEmail) throw new BadRequestException('Missing params');
+
+    return await this.dataSource.transaction(async (manager) => {
+      const authRepoTx = manager.getRepository(Auth);
+      const userRepoTx = manager.getRepository(User);
+      const themeRepoTx = manager.getRepository(Theme);
+
+      // find auth row with pendingNewEmail === newEmail
+      const auth = await authRepoTx.findOne({ where: { pendingNewEmail: newEmail } as any });
+      if (!auth) throw new BadRequestException('No pending email change for this email');
+
+      const pendingHash = (auth as any).pendingEmailTokenHash;
+      const expiry = (auth as any).pendingEmailExpiry;
+      if (!pendingHash || !expiry) throw new BadRequestException('No pending token');
+      if (expiry < new Date()) throw new BadRequestException('Verification token expired');
+
+      const isValid = await bcrypt.compare(token, pendingHash);
+      if (!isValid) throw new BadRequestException('Invalid token');
+
+      const oldEmail = auth.email;
+
+      // update auth row
+      auth.email = newEmail;
+      auth.emailVerified = true;
+      (auth as any).pendingNewEmail = null;
+      (auth as any).pendingEmailTokenHash = null;
+      (auth as any).pendingEmailExpiry = null;
+      if (password) {
+        auth.passwordHash = await bcrypt.hash(password, this.PASSWORD_HASH_ROUNDS);
+      }
+      await authRepoTx.save(auth);
+
+      // update or create user record (mirror complete-register)
+      const user = await userRepoTx.findOne({ where: { email: oldEmail } as any });
+      if (user) {
+        (user as any).email = newEmail;
+        // Optionally update name from auth if needed: user.name = auth.name || user.name
+        await userRepoTx.save(user);
+      } else {
+        const created = userRepoTx.create({ name: (auth as any).name ?? null, email: newEmail } as any);
+        await userRepoTx.save(created);
+      }
+
+      // update themes
+      await themeRepoTx.update({ email: oldEmail } as any, { email: newEmail } as any);
+
+      // return summary
+      return { ok: true, oldEmail, newEmail };
+    });
+  }
 }
+
+

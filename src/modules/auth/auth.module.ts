@@ -11,6 +11,8 @@ import { AuthService } from "./auth.service";
 import { AuthController } from "./auth.controller";
 import { LocalStrategy } from "./strategies/local.strategy";
 import { JwtStrategy } from "./strategies/jwt.strategy";
+import { Theme } from "../themes/entities/theme.entity";
+import { ThemeService } from "../themes/themes.service";
 
 /**
  * Helper: read JWT_EXPIRES_IN from config and normalize to a concrete runtime value.
@@ -28,13 +30,12 @@ function getNormalizedExpiresIn(config: ConfigService): string {
 
 @Module({
   imports: [
-    ConfigModule, // ensure ConfigService is available
-    // Register the DB entities used by AuthService and registration flow
-    TypeOrmModule.forFeature([Auth, User]),
-    // Passport defaults to 'jwt' strategy here
+    ConfigModule, 
+    TypeOrmModule.forFeature([Auth, User, Theme]),
+    
     PassportModule.register({ defaultStrategy: "jwt", session: false }),
 
-    // JwtModule with async factory to read values from ConfigService
+    
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -58,7 +59,7 @@ function getNormalizedExpiresIn(config: ConfigService): string {
       },
     }),
   ],
-  providers: [AuthService, LocalStrategy, JwtStrategy],
+  providers: [AuthService, LocalStrategy, JwtStrategy,ThemeService],
   controllers: [AuthController],
   exports: [AuthService],
 })

@@ -1,28 +1,40 @@
-import { ObjectIdColumn, Column, ObjectId } from "typeorm";
+// src/modules/themes/entities/theme.entity.ts
+import {
+  Entity,
+  Column,
+  ObjectIdColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+  Index,
+  Unique,
+} from 'typeorm';
+import { ObjectId } from 'mongodb';
 
+@Entity({ name: 'themes' })
+@Unique(['email'])
 export class Theme {
   @ObjectIdColumn()
-  _id: ObjectId;
+  id!: ObjectId;
 
   @Column()
-  email: string;
+  @Index()
+  email!: string;
 
-  @Column()
-  key: string;
+  @Column({ default: 'light' })
+  themeId!: string;
 
-  @Column()
-  name: string;
+  @Column({ nullable: true })
+  label?: string | null;
 
-  @Column()
-  hex: string;
+  @Column({ nullable: true })
+  img?: string | null;
 
-  //   //optional feature
-  //   // @Column('simple-json')
-  //   // palette: {
-  //   // primary: string;
-  //   // secondary?: string;
-  //   // background?: string;
-  //   // text?: string;
-  //   // [k: string]: string | undefined;
-  // };
+  @Column({ default: '#c96a2b' })
+  colorHex!: string;
+
+  @CreateDateColumn()
+  createdAt!: Date;
+
+  @UpdateDateColumn()
+  updatedAt!: Date;
 }
