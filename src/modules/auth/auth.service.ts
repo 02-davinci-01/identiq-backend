@@ -1,6 +1,7 @@
 // src/modules/auth/auth.service.ts
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -17,11 +18,10 @@ import { Auth } from "./entities/auth.entity";
 import { JwtService } from "@nestjs/jwt";
 import { v4 as uuidv4 } from "uuid";
 import { ObjectId } from "mongodb";
-import { DataSource } from 'typeorm';
+import { DataSource } from "typeorm";
 import { Theme } from "../themes/entities/theme.entity";
 import { ThemeService } from "../themes/themes.service";
-import axios from 'axios';
-
+import axios from "axios";
 
 @Injectable()
 export class AuthService {
@@ -29,7 +29,6 @@ export class AuthService {
   private readonly HASH_ROUNDS = 10;
   private readonly PASSWORD_HASH_ROUNDS = 12;
   private readonly logger = new Logger(AuthService.name);
-  
 
   constructor(
     @InjectRepository(User) private readonly userRepo: Repository<User>,
@@ -38,8 +37,8 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly brevo: BrevoService,
     private readonly jwtService: JwtService,
-    private readonly dataSource:DataSource,
-    private readonly themeService:ThemeService
+    private readonly dataSource: DataSource,
+    private readonly themeService: ThemeService,
   ) {}
 
   private genToken(len = 24) {
@@ -85,7 +84,8 @@ export class AuthService {
     // Build a friendly verify link for the HTML fallback (the Brevo service will also build one when using templates)
     const frontendURL =
       this.config.get<string>("FRONTEND_URL") ?? "http://localhost:3000";
-    const verifyLink = `${frontendURL.replace(/\/$/, "")}/auth/complete-register?token=${rawToken}`;
+    const verifyLink = `${frontendURL.replace(/\/$/, "")}/auth/complete-register?token=${rawToken}&email=${email}`;
+    console.log(verifyLink);
 
     const html = `
       <p>Hi ${name || "there"},</p>
@@ -154,14 +154,12 @@ export class AuthService {
 
     await this.authRepo.save(authUser);
 
-
-    
     try {
-  await this.themeService.createDefaultForEmail(authUser.email);
-} catch (err) {
-  // if theme creation fails, log but do not block registration (optional)
-  this.logger.error('Failed to initialize default theme for user', err);
-}
+      await this.themeService.createDefaultForEmail(authUser.email);
+    } catch (err) {
+      // if theme creation fails, log but do not block registration (optional)
+      this.logger.error("Failed to initialize default theme for user", err);
+    }
 
     return { ok: true };
   }
@@ -360,17 +358,17 @@ export class AuthService {
    * isJidValid: used by JwtStrategy
    */
   async isJidValid(authIdStr: string, jid: string): Promise<boolean> {
-    
     if (!authIdStr || !jid) return false;
 
     const whereClause: any = ObjectId.isValid(authIdStr)
-    ? { _id: new ObjectId(authIdStr) }
-    : { _id: authIdStr };
+      ? { _id: new ObjectId(authIdStr) }
+      : { _id: authIdStr };
 
-    const auth = await this.authRepo.findOne({ where: whereClause});
+    const auth = await this.authRepo.findOne({ where: whereClause });
     if (!auth) {
-      console.log('auth not found');
-      return false;}
+      console.log("auth not found");
+      return false;
+    }
     return Array.isArray(auth.jids) && auth.jids.includes(jid);
   }
 
@@ -388,15 +386,13 @@ export class AuthService {
     return bcrypt.compare(plainPassword, (auth as any).passwordHash || "");
   }
 
- 
-
   /** Change name: update Auth.name and User.name (keeps both in sync) */
   async changeName(email: string, newName: string) {
-    if (!email || !newName) throw new BadRequestException('Missing params');
+    if (!email || !newName) throw new BadRequestException("Missing params");
 
     // update auth repo
     const auth = await this.authRepo.findOne({ where: { email } as any });
-    if (!auth) throw new NotFoundException('Auth record not found');
+    if (!auth) throw new NotFoundException("Auth record not found");
     (auth as any).name = newName;
     await this.authRepo.save(auth);
 
@@ -412,11 +408,19 @@ export class AuthService {
   }
 
   /** Change password: update auth password hash */
-  async changePassword(email: string, newPassword: string) {
-    if (!email || !newPassword) throw new BadRequestException('Missing params');
+  async changePassword(
+    email: string,
+    oldPassword: string,
+    newPassword: string,
+  ) {
+    if (!email || !newPassword) throw new BadRequestException("Missing params");
 
     const auth = await this.authRepo.findOne({ where: { email } as any });
-    if (!auth) throw new NotFoundException('Auth record not found');
+    if (!auth) throw new NotFoundException("Auth record not found");
+
+    const isValid = await bcrypt.compare(oldPassword, auth.passwordHash!);
+
+    if (!isValid) throw new ConflictException("Old password doesn't match");
 
     const hash = await bcrypt.hash(newPassword, this.PASSWORD_HASH_ROUNDS);
     (auth as any).passwordHash = hash;
@@ -427,7 +431,7 @@ export class AuthService {
 
   /** Delete account: remove auth, user and theme rows (transactional) */
   async deleteAccountByEmailTransactional(email: string) {
-    if (!email) throw new BadRequestException('Missing email');
+    if (!email) throw new BadRequestException("Missing email");
 
     return await this.dataSource.transaction(async (manager) => {
       // delete themes
@@ -453,10 +457,13 @@ export class AuthService {
    * - send verification email to newEmail (use your existing brevo/email util)
    */
   async initiateEmailChange(currentEmail: string, newEmail: string) {
-    if (!currentEmail || !newEmail) throw new BadRequestException('Missing params');
+    if (!currentEmail || !newEmail)
+      throw new BadRequestException("Missing params");
 
-    const auth = await this.authRepo.findOne({ where: { email: currentEmail } as any });
-    if (!auth) throw new NotFoundException('Auth record not found');
+    const auth = await this.authRepo.findOne({
+      where: { email: currentEmail } as any,
+    });
+    if (!auth) throw new NotFoundException("Auth record not found");
 
     const rawToken = this.genToken();
     const tokenHash = await bcrypt.hash(rawToken, this.PASSWORD_HASH_ROUNDS);
@@ -469,24 +476,26 @@ export class AuthService {
 
     // send verification email to newEmail using your email helper (brevo)
     // build verify URL to your frontend confirm page (example)
-    const frontend = process.env.FRONTEND_URL ?? 'http://localhost:3000';
-    const verifyUrl = `${frontend.replace(/\/$/, '')}/auth/confirm-email-change?token=${rawToken}&email=${encodeURIComponent(newEmail)}`;
+    const frontend = process.env.FRONTEND_URL ?? "http://localhost:3000";
+    const verifyUrl = `${frontend.replace(/\/$/, "")}/auth/confirm-email-change?token=${rawToken}&email=${encodeURIComponent(newEmail)}`;
 
     try {
       // use your existing email send helper (adapt method name)
       // this.brevo.sendVerificationEmail(newEmail, rawToken, { verifyUrl });
       // If your project uses a different signature, adapt the call accordingly.
-      this.logger.log(`Would send verify email to ${newEmail} with link ${verifyUrl}`);
+      this.logger.log(
+        `Would send verify email to ${newEmail} with link ${verifyUrl}`,
+      );
     } catch (err) {
       // rollback pending fields if mail failed
       (auth as any).pendingNewEmail = null;
       (auth as any).pendingEmailTokenHash = null;
       (auth as any).pendingEmailExpiry = null;
       await this.authRepo.save(auth);
-      throw new BadRequestException('Failed to send verification email');
+      throw new BadRequestException("Failed to send verification email");
     }
 
-    return { ok: true, message: 'verification sent' };
+    return { ok: true, message: "verification sent" };
   }
 
   /**
@@ -495,8 +504,12 @@ export class AuthService {
    * - newEmail: the email being confirmed
    * - password?: optional new password to set on auth
    */
-  async completeEmailChangeTransactional(token: string, newEmail: string, password?: string) {
-    if (!token || !newEmail) throw new BadRequestException('Missing params');
+  async completeEmailChangeTransactional(
+    token: string,
+    newEmail: string,
+    password?: string,
+  ) {
+    if (!token || !newEmail) throw new BadRequestException("Missing params");
 
     return await this.dataSource.transaction(async (manager) => {
       const authRepoTx = manager.getRepository(Auth);
@@ -504,16 +517,21 @@ export class AuthService {
       const themeRepoTx = manager.getRepository(Theme);
 
       // find auth row with pendingNewEmail === newEmail
-      const auth = await authRepoTx.findOne({ where: { pendingNewEmail: newEmail } as any });
-      if (!auth) throw new BadRequestException('No pending email change for this email');
+      const auth = await authRepoTx.findOne({
+        where: { pendingNewEmail: newEmail } as any,
+      });
+      if (!auth)
+        throw new BadRequestException("No pending email change for this email");
 
       const pendingHash = (auth as any).pendingEmailTokenHash;
       const expiry = (auth as any).pendingEmailExpiry;
-      if (!pendingHash || !expiry) throw new BadRequestException('No pending token');
-      if (expiry < new Date()) throw new BadRequestException('Verification token expired');
+      if (!pendingHash || !expiry)
+        throw new BadRequestException("No pending token");
+      if (expiry < new Date())
+        throw new BadRequestException("Verification token expired");
 
       const isValid = await bcrypt.compare(token, pendingHash);
-      if (!isValid) throw new BadRequestException('Invalid token');
+      if (!isValid) throw new BadRequestException("Invalid token");
 
       const oldEmail = auth.email;
 
@@ -524,23 +542,34 @@ export class AuthService {
       (auth as any).pendingEmailTokenHash = null;
       (auth as any).pendingEmailExpiry = null;
       if (password) {
-        auth.passwordHash = await bcrypt.hash(password, this.PASSWORD_HASH_ROUNDS);
+        auth.passwordHash = await bcrypt.hash(
+          password,
+          this.PASSWORD_HASH_ROUNDS,
+        );
       }
       await authRepoTx.save(auth);
 
       // update or create user record (mirror complete-register)
-      const user = await userRepoTx.findOne({ where: { email: oldEmail } as any });
+      const user = await userRepoTx.findOne({
+        where: { email: oldEmail } as any,
+      });
       if (user) {
         (user as any).email = newEmail;
         // Optionally update name from auth if needed: user.name = auth.name || user.name
         await userRepoTx.save(user);
       } else {
-        const created = userRepoTx.create({ name: (auth as any).name ?? null, email: newEmail } as any);
+        const created = userRepoTx.create({
+          name: (auth as any).name ?? null,
+          email: newEmail,
+        } as any);
         await userRepoTx.save(created);
       }
 
       // update themes
-      await themeRepoTx.update({ email: oldEmail } as any, { email: newEmail } as any);
+      await themeRepoTx.update(
+        { email: oldEmail } as any,
+        { email: newEmail } as any,
+      );
 
       // return summary
       return { ok: true, oldEmail, newEmail };
@@ -549,138 +578,146 @@ export class AuthService {
 
   /////////////////////////////FORGOT PASSWORD/////////////////////////////////////////////////
   // inside AuthService class
-// inside AuthService class — replace existing initiatePasswordReset with this
-async initiatePasswordReset(email: string) {
-  if (!email) throw new BadRequestException("Email is required");
+  // inside AuthService class — replace existing initiatePasswordReset with this
+  async initiatePasswordReset(email: string) {
+    if (!email) throw new BadRequestException("Email is required");
 
-  const normalizedEmail = String(email).trim().toLowerCase();
+    const normalizedEmail = String(email).trim().toLowerCase();
 
-  // find existing auth row (may return null)
-  let authUser: any = await this.authRepo.findOne({ where: { email: normalizedEmail } as any });
-
-  // If no auth row exists, create a minimal auth record so we can attach the token
-  if (!authUser) {
-    authUser = this.authRepo.create({
-      name: undefined,
-      email: normalizedEmail,
-      emailVerified: false,
-    } as any);
-  }
-
-  // generate raw token and its hash (same as register)
-  const rawToken = this.genToken(24);
-  const tokenHash = await bcrypt.hash(rawToken, this.HASH_ROUNDS);
-  const expiry = new Date(Date.now() + this.TOKEN_EXPIRY_TIME);
-
-  // persist hash + expiry (we ensured authUser is a real entity above)
-  authUser.resetPasswordTokenHash = tokenHash;
-  authUser.resetPasswordExpiry = expiry;
-
-  // save (authUser is guaranteed non-null here)
-  await this.authRepo.save(authUser);
-
-  // Build friendly reset link that includes token & email in query (same pattern as register)
-  const frontendURL = this.config.get<string>("FRONTEND_URL") ?? "http://localhost:3000";
-  const verifyLink = `${frontendURL.replace(/\/$/, "")}/auth/forgot-password?token=${encodeURIComponent(
-    rawToken,
-  )}&email=${encodeURIComponent(normalizedEmail)}`;
-
-  // extraParams shaped exactly like register (so your Brevo template can reuse)
-  const extraParams = {
-    token: rawToken,
-    verifyLink,
-    name: authUser.name ?? "",
-    email: normalizedEmail,
-    year: String(new Date().getFullYear()),
-    templateId:"3"
-  };
-
-  try {
-    // Use new brevo helper that targets the forgot-password template env var
-    await this.brevo.sendForgotPasswordEmail(normalizedEmail, rawToken, {
-      subject: "Reset your password",
-      extraParams,
+    // find existing auth row (may return null)
+    let authUser: any = await this.authRepo.findOne({
+      where: { email: normalizedEmail } as any,
     });
-  } catch (err) {
-    this.logger?.error("Brevo send error (forgot password)", err as any);
-    // match registration behaviour: throw friendly error (or you can return neutral)
-    throw new BadRequestException("Failed to send password reset email");
-  }
 
-  return { message: "email sent successfully", status: true };
-}
-
-
-
-/**
- * Complete password reset (verify token + email then set new password)
- * - email & rawToken are provided by query in the frontend link and passed into controller
- * - we compare rawToken to the stored hash using bcrypt.compare
- * - on success we hash new password (same HASH_ROUNDS) and persist to auth row (and user row if needed)
- * - clear the resetPasswordTokenHash & resetPasswordExpiry fields
- */
-// inside AuthService class
-async completePasswordResetWithEmail(email: string, rawToken: string, newPassword: string) {
-  if (!email) throw new BadRequestException("Email is required");
-  if (!rawToken) throw new BadRequestException("Token is required");
-  if (!newPassword) throw new BadRequestException("Password is required");
-
-  const normalizedEmail = String(email).trim().toLowerCase();
-
-  // find auth row by email
-  const authUser: any = await this.authRepo.findOne({ where: { email: normalizedEmail } as any });
-  if (!authUser) throw new NotFoundException("Invalid token or email");
-
-  const storedHash: string | undefined = authUser.resetPasswordTokenHash;
-  const expiry: Date | string | undefined = authUser.resetPasswordExpiry;
-
-  if (!storedHash || !expiry) {
-    throw new BadRequestException("Invalid token or email");
-  }
-
-  // check expiry
-  const now = new Date();
-  if (new Date(expiry) < now) {
-    throw new BadRequestException("Token expired");
-  }
-
-  // verify the token using bcrypt.compare (we stored only the hash)
-  const match = await bcrypt.compare(rawToken, storedHash);
-  if (!match) throw new BadRequestException("Invalid token");
-
-  // hash the new password (same hashing as register)
-  const newPasswordHash = await bcrypt.hash(newPassword, this.HASH_ROUNDS);
-
-  // update authUser password and clear token fields
-  if (typeof authUser.passwordHash !== "undefined") {
-    authUser.passwordHash = newPasswordHash;
-  } else {
-    authUser.password = newPasswordHash; // fallback if your entity uses 'password'
-  }
-  authUser.resetPasswordTokenHash = null;
-  authUser.resetPasswordExpiry = null;
-  authUser.emailVerified = true;
-
-  await this.authRepo.save(authUser);
-
-  // synchronize with userRepo if present
-  if (this.userRepo) {
-    try {
-      const user: any = await this.userRepo.findOne({ where: { email: normalizedEmail } as any });
-      if (user) {
-        if (typeof user.passwordHash !== "undefined") user.passwordHash = newPasswordHash;
-        else user.password = newPasswordHash;
-        user.emailVerified = true;
-        await this.userRepo.save(user);
-      }
-    } catch (err) {
-      // log but don't fail — primary auth repo updated successfully
-      this.logger?.error("Failed to sync password to userRepo", err as any);
+    // If no auth row exists, create a minimal auth record so we can attach the token
+    if (!authUser) {
+      authUser = this.authRepo.create({
+        name: undefined,
+        email: normalizedEmail,
+        emailVerified: false,
+      } as any);
     }
+
+    // generate raw token and its hash (same as register)
+    const rawToken = this.genToken(24);
+    const tokenHash = await bcrypt.hash(rawToken, this.HASH_ROUNDS);
+    const expiry = new Date(Date.now() + this.TOKEN_EXPIRY_TIME);
+
+    // persist hash + expiry (we ensured authUser is a real entity above)
+    authUser.resetPasswordTokenHash = tokenHash;
+    authUser.resetPasswordExpiry = expiry;
+
+    // save (authUser is guaranteed non-null here)
+    await this.authRepo.save(authUser);
+
+    // Build friendly reset link that includes token & email in query (same pattern as register)
+    const frontendURL =
+      this.config.get<string>("FRONTEND_URL") ?? "http://localhost:3000";
+    const verifyLink = `${frontendURL.replace(/\/$/, "")}/auth/forgot-password?token=${encodeURIComponent(
+      rawToken,
+    )}&email=${encodeURIComponent(normalizedEmail)}`;
+
+    // extraParams shaped exactly like register (so your Brevo template can reuse)
+    const extraParams = {
+      token: rawToken,
+      verifyLink,
+      name: authUser.name ?? "",
+      email: normalizedEmail,
+      year: String(new Date().getFullYear()),
+      templateId: "3",
+    };
+
+    try {
+      // Use new brevo helper that targets the forgot-password template env var
+      await this.brevo.sendForgotPasswordEmail(normalizedEmail, rawToken, {
+        subject: "Reset your password",
+        extraParams,
+      });
+    } catch (err) {
+      this.logger?.error("Brevo send error (forgot password)", err as any);
+      // match registration behaviour: throw friendly error (or you can return neutral)
+      throw new BadRequestException("Failed to send password reset email");
+    }
+
+    return { message: "email sent successfully", status: true };
   }
 
-  return { message: "password updated successfully", status: true };
-}
+  /**
+   * Complete password reset (verify token + email then set new password)
+   * - email & rawToken are provided by query in the frontend link and passed into controller
+   * - we compare rawToken to the stored hash using bcrypt.compare
+   * - on success we hash new password (same HASH_ROUNDS) and persist to auth row (and user row if needed)
+   * - clear the resetPasswordTokenHash & resetPasswordExpiry fields
+   */
+  // inside AuthService class
+  async completePasswordResetWithEmail(
+    email: string,
+    rawToken: string,
+    newPassword: string,
+  ) {
+    if (!email) throw new BadRequestException("Email is required");
+    if (!rawToken) throw new BadRequestException("Token is required");
+    if (!newPassword) throw new BadRequestException("Password is required");
 
+    const normalizedEmail = String(email).trim().toLowerCase();
 
+    // find auth row by email
+    const authUser: any = await this.authRepo.findOne({
+      where: { email: normalizedEmail } as any,
+    });
+    if (!authUser) throw new NotFoundException("Invalid token or email");
+
+    const storedHash: string | undefined = authUser.resetPasswordTokenHash;
+    const expiry: Date | string | undefined = authUser.resetPasswordExpiry;
+
+    if (!storedHash || !expiry) {
+      throw new BadRequestException("Invalid token or email");
+    }
+
+    // check expiry
+    const now = new Date();
+    if (new Date(expiry) < now) {
+      throw new BadRequestException("Token expired");
+    }
+
+    // verify the token using bcrypt.compare (we stored only the hash)
+    const match = await bcrypt.compare(rawToken, storedHash);
+    if (!match) throw new BadRequestException("Invalid token");
+
+    // hash the new password (same hashing as register)
+    const newPasswordHash = await bcrypt.hash(newPassword, this.HASH_ROUNDS);
+
+    // update authUser password and clear token fields
+    if (typeof authUser.passwordHash !== "undefined") {
+      authUser.passwordHash = newPasswordHash;
+    } else {
+      authUser.password = newPasswordHash; // fallback if your entity uses 'password'
+    }
+    authUser.resetPasswordTokenHash = null;
+    authUser.resetPasswordExpiry = null;
+    authUser.emailVerified = true;
+
+    await this.authRepo.save(authUser);
+
+    // synchronize with userRepo if present
+    if (this.userRepo) {
+      try {
+        const user: any = await this.userRepo.findOne({
+          where: { email: normalizedEmail } as any,
+        });
+        if (user) {
+          if (typeof user.passwordHash !== "undefined")
+            user.passwordHash = newPasswordHash;
+          else user.password = newPasswordHash;
+          user.emailVerified = true;
+          await this.userRepo.save(user);
+        }
+      } catch (err) {
+        // log but don't fail — primary auth repo updated successfully
+        this.logger?.error("Failed to sync password to userRepo", err as any);
+      }
+    }
+
+    return { message: "password updated successfully", status: true };
+  }
 }

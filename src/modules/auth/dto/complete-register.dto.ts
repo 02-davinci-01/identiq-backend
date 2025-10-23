@@ -8,10 +8,6 @@ import {
 } from "class-validator";
 
 export class CompleteRegisterDTO {
-  @IsString()
-  @IsEmail()
-  email: string;
-
   @Length(2, 128)
   @IsAlphanumeric()
   @IsNotEmpty()
