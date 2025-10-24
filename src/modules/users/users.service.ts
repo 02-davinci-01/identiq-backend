@@ -73,12 +73,12 @@ export class UsersService {
     }
   }
 
-  a; // async getAllUsers(limit?: number, offset?: number) { ... }
+  // async getAllUsers(limit?: number, offset?: number) { ... }
 
   async getAllUsers(limit?: number, offset?: number) {
     try {
       // coerce and cap values
-      const take = Math.min(1000, Math.max(1, Number(limit || 20))); // default 10, max safety cap
+      const take = Math.min(1000, Math.max(1, Number(limit || 4))); // default 10, max safety cap
       const skip = Math.max(0, Number(offset || 0));
 
       // Use skip & take for pagination with TypeORM
@@ -88,8 +88,6 @@ export class UsersService {
         skip,
         take,
       });
-
-      console.log(users);
 
       // return both data and metadata so client can know about total if needed
       return users;

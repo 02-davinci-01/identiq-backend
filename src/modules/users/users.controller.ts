@@ -14,6 +14,7 @@ import { UsersService } from "./users.service";
 import { CurrentUser } from "../common/decorator/current-user-decorator";
 import { UserResponseDto } from "./dto/user-response-dto";
 import { DeleteUserDto } from "./dto/delete-user.dto";
+import { Public } from "../common/decorator/public.decorator";
 
 @Controller("users")
 export class UsersController {
@@ -88,8 +89,10 @@ export class UsersController {
     }
   }
 
+  @Public()
   @Get("count")
   async getCount() {
+    console.log("i got hit");
     const total = await this.userService.countUsers();
     return { count: total };
   }
@@ -115,16 +118,44 @@ export class UsersController {
   }
 
   @Get("experimental")
-  async getAllChance() {
-    const users = await this.userService.getAllUsers();
-    // Normalize/shape if needed for client
-    return users.map((u) => ({
-      id: (u as any).id ?? (u as any)._id ?? null,
-      name: (u as any).name ?? "",
-      email: (u as any).email ?? "",
-      colorHex: (u as any).colorHex ?? "#c96a2b",
-      createdAt: (u as any).createdAt ?? null,
-    }));
+  async getAllChance(
+    @Query("limit") limit?: string,
+    @Query("offset") offset?: string,
+  ) {
+    console.log("hello im called (experimental)");
+    try {
+      const randomChance = Math.random(); // 0..1
+
+      // 50% probability to return empty array (simulate flaky infra)
+      if (randomChance < 0.5) {
+        console.log("[Experimental] Returning empty data for test scenario.");
+        return [];
+      }
+
+      // parse pagination params (falls back to undefined -> service default)
+      const parsedLimit = limit ? Number(limit) : undefined;
+      const parsedOffset = offset ? Number(offset) : undefined;
+
+      const users = await this.userService.getAllUsers(
+        parsedLimit,
+        parsedOffset,
+      );
+
+      // Normalize/shape for client
+      return users.map((u) => ({
+        id: (u as any).id ?? (u as any)._id ?? null,
+        name: (u as any).name ?? "",
+        email: (u as any).email ?? "",
+        colorHex: (u as any).colorHex ?? "#c96a2b",
+        createdAt: (u as any).createdAt ?? null,
+      }));
+    } catch (error) {
+      console.error(
+        "[Experimental] Error fetching probabilistic users:",
+        error,
+      );
+      throw new InternalServerErrorException("Failed to fetch user data.");
+    }
   }
 
   // Delete a user by email provided in body (admin operation)

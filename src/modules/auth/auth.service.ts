@@ -575,13 +575,14 @@ export class AuthService {
   async confirmEmailChange(rawToken: string, email: string) {
     if (!rawToken || !email)
       throw new BadRequestException("Missing token or email");
-
     const normalizedEmail = String(email).trim().toLowerCase();
 
     // find the auth row by the new email supplied in query
     const authDoc = await this.authRepo.findOne({
       where: { updEmail: normalizedEmail } as any,
     });
+
+    const oldEmail = authDoc?.email;
     if (!authDoc) {
       throw new BadRequestException("No pending verification for this email");
     }
@@ -596,19 +597,21 @@ export class AuthService {
       throw new BadRequestException("Token expired");
     }
 
-    // verify token
+    // verify token (cheap check before starting txn)
     const matches = await bcrypt.compare(
       rawToken,
       authDoc.verifyEmailTokenHash,
     );
     if (!matches) throw new BadRequestException("Invalid token");
 
-    // Transactional update — keep it focused on Auth (you said you'll add user-repo changes)
     try {
       const result = await this.dataSource.transaction(async (manager) => {
+        // transaction-scoped repos
         const authRepoTx = manager.getRepository(this.authRepo.target);
+        const userRepoTx = manager.getRepository(this.userRepo.target);
+        const themeRepoTx = manager.getRepository(this.themeRepo.target);
 
-        // reload under transaction
+        // reload auth under transaction to avoid TOCTOU
         const auth = await authRepoTx.findOne({
           where: { id: (authDoc as any).id } as any,
         });
@@ -627,39 +630,49 @@ export class AuthService {
         );
         if (!okInside) throw new BadRequestException("Invalid token");
 
-        // NOTE: auth.email is the new email in this flow (we found by new email)
-        // Mark verified and clear verify fields
-        //consistency
-        const userDoc = await this.userRepo.findOne({
-          where: { email: normalizedEmail } as any,
-        });
+        // Find user & theme by the previous/current email (oldEmail). This mirrors your original logic.
+        // Use transaction-local repos so updates are part of the same transaction.
+        let userDoc = null as any | null;
+        let themeDoc = null as any | null;
 
-        const themeDoc = await this.themeRepo.findOne({
-          where: { email: normalizedEmail } as any,
-        });
+        if (oldEmail) {
+          userDoc = await userRepoTx.findOne({
+            where: { email: String(oldEmail).trim().toLowerCase() } as any,
+          });
 
-        userDoc!.email = normalizedEmail;
-        themeDoc!.email = normalizedEmail;
-        this.themeRepo.save(themeDoc!);
-        this.userRepo.save(userDoc!);
+          themeDoc = await themeRepoTx.findOne({
+            where: { email: String(oldEmail).trim().toLowerCase() } as any,
+          });
+        }
 
+        // Update user and theme only if found (mirrors previous assumption but safe inside txn)
+        if (userDoc) {
+          userDoc.email = normalizedEmail;
+          await userRepoTx.save(userDoc);
+        } else {
+          // preserve current behavior (don't throw) but log so you can inspect missing rows
+          this.logger.warn(
+            `confirmEmailChange: user not found for oldEmail=${oldEmail}, authId=${(auth as any).id}. Skipping user update.`,
+          );
+        }
+
+        if (themeDoc) {
+          themeDoc.email = normalizedEmail;
+          await themeRepoTx.save(themeDoc);
+        } else {
+          this.logger.warn(
+            `confirmEmailChange: theme not found for oldEmail=${oldEmail}, authId=${(auth as any).id}. Skipping theme update.`,
+          );
+        }
+
+        // Update auth record: mark verified, set canonical email, clear updEmail & token fields
         auth.emailVerified = true;
         auth.email = normalizedEmail;
-        auth.updEmail = "";
-
+        auth.updEmail = null;
         auth.verifyEmailTokenHash = null;
         auth.verifyEmailExpiry = null;
 
         await authRepoTx.save(auth);
-
-        // === PLACEHOLDER ===
-        // If you need to update User and Theme tables/collections, add those updates here
-        // using userRepoTx and themeRepoTx fetched from manager.getRepository(...)
-        // Example:
-        // const userRepoTx = manager.getRepository(User);
-        // const themeRepoTx = manager.getRepository(Theme);
-        // -- your user updates (you requested you'll add them) --
-        // -- theme updates if required --
 
         return { success: true };
       });
