@@ -27,7 +27,7 @@ import { CurrentUser } from "../common/decorator/current-user-decorator";
 import { ChangePasswordDto } from "./dto/change-password.dto";
 import { ConfirmEmailChangeDto } from "./dto/confirm-email-change.dto";
 import { ChangeNameDto } from "./dto/change-name.dto";
-import { InitiateEmailChangeDto } from "./dto/initiate-email-change.dto";
+import { RequestEmailChangeDto } from "./dto/initiate-email-change.dto";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { ResetPasswordDto } from "./dto/register-password.dto";
 import { VerifyCaptchaDto } from "./dto/verify-captcha.dto";
@@ -283,44 +283,31 @@ export class AuthController {
    * Protected: current token required so we can ensure the requester is owner
    */
 
-  @Post("email")
-  // @UseGuards(JwtAuthGuard)
-  async initiateEmailChange(
-    @CurrentUser() jwt: any,
-    @Body() dto: InitiateEmailChangeDto,
+  @Post("request-email-change")
+  async requestEmailChange(
+    @CurrentUser() payload: any,
+    @Body() body: RequestEmailChangeDto,
   ) {
-    const currentEmail = jwt?.email;
-    if (!currentEmail) throw new BadRequestException("No email in token");
-    if (!dto?.newEmail) throw new BadRequestException("Missing newEmail");
-
-    const r = await this.authService.initiateEmailChange(
+    const currentEmail = payload?.email;
+    return await this.authService.initiateEmailChange(
       currentEmail,
-      dto.newEmail,
+      body.newEmail,
     );
-    return r;
   }
+  // @UseGuards(JwtAuthGuard)
 
   /**
    * POST /auth/email/confirm?token=...
    * Complete the change: token in query, newEmail and optional password in body.
    * This endpoint performs updates to auth, user and theme repos transactionally.
    */
-  @Post("email/confirm")
+
   // this route is intentionally public (confirmation link usually doesn't include a JWT).
-  async confirmEmailChange(
-    @Query("token") token: string,
-    @Body() body: ConfirmEmailChangeDto,
-  ) {
-    if (!token) throw new BadRequestException("Missing token in query");
-    if (!body?.email) throw new BadRequestException("Missing email in body");
-
-    const result = await this.authService.completeEmailChangeTransactional(
-      token,
-      body.email,
-      body.password,
-    );
-
-    return { stauts: true, message: "Email updated", ...result };
+  @Public()
+  @Get("confirm-email-change")
+  async confirmEmailChangeGet(@Query() query: ConfirmEmailChangeDto) {
+    // query.token and query.email come from the URL
+    return await this.authService.confirmEmailChange(query.token, query.email);
   }
 
   @Public()

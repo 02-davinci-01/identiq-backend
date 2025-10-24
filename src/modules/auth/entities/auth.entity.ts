@@ -15,6 +15,9 @@ export class Auth {
   @Column({ unique: true })
   email: string;
 
+  @Column({ nullable: true })
+  updEmail?: string | null;
+
   @Column()
   name: string;
 
@@ -33,7 +36,7 @@ export class Auth {
   @Column({ nullable: true })
   resetPasswordTokenHash?: string | null;
 
-  @Column({ nullable: true, type: 'timestamp', name: 'resetPasswordExpiry' })
+  @Column({ nullable: true, type: "timestamp", name: "resetPasswordExpiry" })
   resetPasswordExpiry?: Date | null;
 
   @Column({ type: "simple-array", nullable: true })

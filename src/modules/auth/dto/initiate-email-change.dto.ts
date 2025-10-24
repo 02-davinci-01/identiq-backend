@@ -1,3 +1,6 @@
-export class InitiateEmailChangeDto {
-  newEmail!: string;
+import { IsEmail } from "class-validator";
+
+export class RequestEmailChangeDto {
+  @IsEmail()
+  newEmail: string;
 }

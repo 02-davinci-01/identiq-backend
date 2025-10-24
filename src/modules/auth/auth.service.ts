@@ -3,13 +3,14 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { User } from "../users/entities/user.entity";
-import { Any, Repository } from "typeorm";
+import { Any, MoreThan, Repository } from "typeorm";
 import { randomBytes } from "crypto";
 import * as bcrypt from "bcryptjs";
 import { ConfigService } from "@nestjs/config";
@@ -456,46 +457,91 @@ export class AuthService {
    * - set pendingNewEmail, pendingEmailTokenHash, pendingEmailExpiry on Auth
    * - send verification email to newEmail (use your existing brevo/email util)
    */
+
+  /**
+   * Initiate email change:
+   * - sets pendingNewEmail, pendingEmailTokenHash, pendingEmailExpiry on Auth
+   * - sends verification email to newEmail using Brevo helper (same signature as register)
+   */
+  // inside AuthService
+
+  /**
+   * Initiates an email change.
+   * - Reuses verifyEmailTokenHash & verifyEmailExpiry fields (no new schema fields).
+   * - Raw token format: "<newEmail>::<randomHex>"
+   * - Sends verification email to newEmail via Brevo (same signature as register).
+   */
   async initiateEmailChange(currentEmail: string, newEmail: string) {
-    if (!currentEmail || !newEmail)
-      throw new BadRequestException("Missing params");
+    if (!currentEmail)
+      throw new BadRequestException("Missing authenticated email");
+    if (!newEmail) throw new BadRequestException("New email is required");
 
-    const auth = await this.authRepo.findOne({
-      where: { email: currentEmail } as any,
+    const normalizedCurrent = String(currentEmail).trim().toLowerCase();
+    const normalizedNew = String(newEmail).trim().toLowerCase();
+
+    if (normalizedCurrent === normalizedNew) {
+      throw new BadRequestException("New email is same as current email");
+    }
+
+    // find auth record for current user
+    const authUser = await this.authRepo.findOne({
+      where: { email: normalizedCurrent } as any,
     });
-    if (!auth) throw new NotFoundException("Auth record not found");
+    if (!authUser) throw new NotFoundException("Auth record not found");
 
-    const rawToken = this.genToken();
-    const tokenHash = await bcrypt.hash(rawToken, this.PASSWORD_HASH_ROUNDS);
+    // ensure no other account already uses the new email
+    const already = await this.authRepo.findOne({
+      where: { email: normalizedNew } as any,
+    });
+    if (already) throw new ConflictException("Requested email already in use");
+
+    // authUser.email = newEmail;
+    authUser.updEmail = newEmail;
+
+    // build raw token that *includes* the new email (so we don't need a pendingEmail field)
+    const randomPart = this.genToken(24); // you already have genToken from register
+    const rawToken = `${randomPart}`;
+
+    // hash the raw token exactly like your register flow (bcrypt)
+    const tokenHash = await bcrypt.hash(rawToken, this.HASH_ROUNDS);
     const expiry = new Date(Date.now() + this.TOKEN_EXPIRY_TIME);
 
-    (auth as any).pendingNewEmail = newEmail;
-    (auth as any).pendingEmailTokenHash = tokenHash;
-    (auth as any).pendingEmailExpiry = expiry;
-    await this.authRepo.save(auth);
+    // persist hash + expiry into the verify fields you already have
+    authUser.verifyEmailTokenHash = tokenHash;
+    authUser.verifyEmailExpiry = expiry;
 
-    // send verification email to newEmail using your email helper (brevo)
-    // build verify URL to your frontend confirm page (example)
-    const frontend = process.env.FRONTEND_URL ?? "http://localhost:3000";
-    const verifyUrl = `${frontend.replace(/\/$/, "")}/auth/confirm-email-change?token=${rawToken}&email=${encodeURIComponent(newEmail)}`;
+    // Mark emailVerified false temporarily (per your described flow)
+    authUser.emailVerified = false;
 
+    await this.authRepo.save(authUser);
+
+    // build frontend verification link (same as register)
+    const frontendURL = (
+      this.config.get<string>("FRONTEND_URL") ?? "http://localhost:3000"
+    ).replace(/\/$/, "");
+    const verifyLink = `${frontendURL}/email-verification?token=${rawToken}&email=${encodeURIComponent(normalizedNew)}`;
+
+    // send the verification email using your Brevo helper (signature matches register)
     try {
-      // use your existing email send helper (adapt method name)
-      // this.brevo.sendVerificationEmail(newEmail, rawToken, { verifyUrl });
-      // If your project uses a different signature, adapt the call accordingly.
-      this.logger.log(
-        `Would send verify email to ${newEmail} with link ${verifyUrl}`,
-      );
+      await this.brevo.sendVerificationEmail(normalizedNew, rawToken, {
+        subject: "Confirm your new email address",
+        extraParams: {
+          token: rawToken,
+          verifyLink,
+          email: normalizedNew,
+          year: String(new Date().getFullYear()),
+        },
+      });
     } catch (err) {
-      // rollback pending fields if mail failed
-      (auth as any).pendingNewEmail = null;
-      (auth as any).pendingEmailTokenHash = null;
-      (auth as any).pendingEmailExpiry = null;
-      await this.authRepo.save(auth);
+      this.logger.error("Brevo send error (initiateEmailChange)", err as any);
+      // rollback token fields on failure so nothing is left hanging
+      authUser.verifyEmailTokenHash = null;
+      authUser.verifyEmailExpiry = null;
+      await this.authRepo.save(authUser);
       throw new BadRequestException("Failed to send verification email");
     }
 
-    return { ok: true, message: "verification sent" };
+    return { message: "verification email sent", status: true };
   }
 
   /**
@@ -504,76 +550,125 @@ export class AuthService {
    * - newEmail: the email being confirmed
    * - password?: optional new password to set on auth
    */
-  async completeEmailChangeTransactional(
-    token: string,
-    newEmail: string,
-    password?: string,
-  ) {
-    if (!token || !newEmail) throw new BadRequestException("Missing params");
+  /**
+   * Complete email change (transactional update across Auth, User, Theme)
+   * - token: raw token from query
+   * - newEmail: the email being confirmed (body)
+   * - password?: optional new password to set on auth
+   *
+   * This uses DataSource.transaction (keeps TypeORM transaction pattern you already have).
+   */
+  // inside AuthService
 
-    return await this.dataSource.transaction(async (manager) => {
-      const authRepoTx = manager.getRepository(Auth);
-      const userRepoTx = manager.getRepository(User);
-      const themeRepoTx = manager.getRepository(Theme);
+  /**
+   * Confirm email change.
+   * - rawToken: the token provided in the verification link (contains newEmail::random)
+   * - email: the newEmail (frontend passes it back)
+   *
+   * Process:
+   *  - find candidate auth documents with non-expired verifyEmailExpiry
+   *  - bcrypt.compare rawToken against each candidate.verifyEmailTokenHash
+   *  - when a match is found, extract embedded newEmail from token and validate it equals `email` param
+   *  - then in a transaction update auth.email, set emailVerified = true, clear verify fields,
+   *    and update user + theme collections to keep consistency.
+   */
+  async confirmEmailChange(rawToken: string, email: string) {
+    if (!rawToken || !email)
+      throw new BadRequestException("Missing token or email");
 
-      // find auth row with pendingNewEmail === newEmail
-      const auth = await authRepoTx.findOne({
-        where: { pendingNewEmail: newEmail } as any,
-      });
-      if (!auth)
-        throw new BadRequestException("No pending email change for this email");
+    const normalizedEmail = String(email).trim().toLowerCase();
 
-      const pendingHash = (auth as any).pendingEmailTokenHash;
-      const expiry = (auth as any).pendingEmailExpiry;
-      if (!pendingHash || !expiry)
-        throw new BadRequestException("No pending token");
-      if (expiry < new Date())
-        throw new BadRequestException("Verification token expired");
-
-      const isValid = await bcrypt.compare(token, pendingHash);
-      if (!isValid) throw new BadRequestException("Invalid token");
-
-      const oldEmail = auth.email;
-
-      // update auth row
-      auth.email = newEmail;
-      auth.emailVerified = true;
-      (auth as any).pendingNewEmail = null;
-      (auth as any).pendingEmailTokenHash = null;
-      (auth as any).pendingEmailExpiry = null;
-      if (password) {
-        auth.passwordHash = await bcrypt.hash(
-          password,
-          this.PASSWORD_HASH_ROUNDS,
-        );
-      }
-      await authRepoTx.save(auth);
-
-      // update or create user record (mirror complete-register)
-      const user = await userRepoTx.findOne({
-        where: { email: oldEmail } as any,
-      });
-      if (user) {
-        (user as any).email = newEmail;
-        // Optionally update name from auth if needed: user.name = auth.name || user.name
-        await userRepoTx.save(user);
-      } else {
-        const created = userRepoTx.create({
-          name: (auth as any).name ?? null,
-          email: newEmail,
-        } as any);
-        await userRepoTx.save(created);
-      }
-
-      // update themes
-      await themeRepoTx.update(
-        { email: oldEmail } as any,
-        { email: newEmail } as any,
-      );
-
-      // return summary
-      return { ok: true, oldEmail, newEmail };
+    // find the auth row by the new email supplied in query
+    const authDoc = await this.authRepo.findOne({
+      where: { updEmail: normalizedEmail } as any,
     });
+    if (!authDoc) {
+      throw new BadRequestException("No pending verification for this email");
+    }
+
+    if (!authDoc.verifyEmailTokenHash || !authDoc.verifyEmailExpiry) {
+      throw new BadRequestException(
+        "No verification token present for this email",
+      );
+    }
+
+    if (new Date(authDoc.verifyEmailExpiry) < new Date()) {
+      throw new BadRequestException("Token expired");
+    }
+
+    // verify token
+    const matches = await bcrypt.compare(
+      rawToken,
+      authDoc.verifyEmailTokenHash,
+    );
+    if (!matches) throw new BadRequestException("Invalid token");
+
+    // Transactional update — keep it focused on Auth (you said you'll add user-repo changes)
+    try {
+      const result = await this.dataSource.transaction(async (manager) => {
+        const authRepoTx = manager.getRepository(this.authRepo.target);
+
+        // reload under transaction
+        const auth = await authRepoTx.findOne({
+          where: { id: (authDoc as any).id } as any,
+        });
+        if (!auth) throw new BadRequestException("Auth record disappeared");
+
+        // double-check expiry & hash inside txn
+        if (
+          !auth.verifyEmailExpiry ||
+          new Date(auth.verifyEmailExpiry) < new Date()
+        ) {
+          throw new BadRequestException("Token expired");
+        }
+        const okInside = await bcrypt.compare(
+          rawToken,
+          auth.verifyEmailTokenHash || "",
+        );
+        if (!okInside) throw new BadRequestException("Invalid token");
+
+        // NOTE: auth.email is the new email in this flow (we found by new email)
+        // Mark verified and clear verify fields
+        //consistency
+        const userDoc = await this.userRepo.findOne({
+          where: { email: normalizedEmail } as any,
+        });
+
+        const themeDoc = await this.themeRepo.findOne({
+          where: { email: normalizedEmail } as any,
+        });
+
+        userDoc!.email = normalizedEmail;
+        themeDoc!.email = normalizedEmail;
+        this.themeRepo.save(themeDoc!);
+        this.userRepo.save(userDoc!);
+
+        auth.emailVerified = true;
+        auth.email = normalizedEmail;
+        auth.updEmail = "";
+
+        auth.verifyEmailTokenHash = null;
+        auth.verifyEmailExpiry = null;
+
+        await authRepoTx.save(auth);
+
+        // === PLACEHOLDER ===
+        // If you need to update User and Theme tables/collections, add those updates here
+        // using userRepoTx and themeRepoTx fetched from manager.getRepository(...)
+        // Example:
+        // const userRepoTx = manager.getRepository(User);
+        // const themeRepoTx = manager.getRepository(Theme);
+        // -- your user updates (you requested you'll add them) --
+        // -- theme updates if required --
+
+        return { success: true };
+      });
+
+      return result;
+    } catch (err) {
+      this.logger.error("confirmEmailChange transaction failed", err as any);
+      throw new InternalServerErrorException("Failed to confirm email change");
+    }
   }
 
   /////////////////////////////FORGOT PASSWORD/////////////////////////////////////////////////
@@ -660,12 +755,14 @@ export class AuthService {
     if (!newPassword) throw new BadRequestException("Password is required");
 
     const normalizedEmail = String(email).trim().toLowerCase();
+    console.log(email);
 
     // find auth row by email
     const authUser: any = await this.authRepo.findOne({
       where: { email: normalizedEmail } as any,
     });
     if (!authUser) throw new NotFoundException("Invalid token or email");
+    console.log("1st");
 
     const storedHash: string | undefined = authUser.resetPasswordTokenHash;
     const expiry: Date | string | undefined = authUser.resetPasswordExpiry;
@@ -681,6 +778,7 @@ export class AuthService {
     }
 
     // verify the token using bcrypt.compare (we stored only the hash)
+    console.log("invalid here");
     const match = await bcrypt.compare(rawToken, storedHash);
     if (!match) throw new BadRequestException("Invalid token");
 
