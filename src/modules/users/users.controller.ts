@@ -92,7 +92,6 @@ export class UsersController {
   @Public()
   @Get("count")
   async getCount() {
-    console.log("i got hit");
     const total = await this.userService.countUsers();
     return { count: total };
   }
@@ -122,7 +121,6 @@ export class UsersController {
     @Query("limit") limit?: string,
     @Query("offset") offset?: string,
   ) {
-    console.log("hello im called (experimental)");
     try {
       const randomChance = Math.random(); // 0..1
 
