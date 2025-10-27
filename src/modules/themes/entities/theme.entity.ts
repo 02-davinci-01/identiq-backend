@@ -7,11 +7,22 @@ import {
   UpdateDateColumn,
   Index,
   Unique,
-} from 'typeorm';
-import { ObjectId } from 'mongodb';
+} from "typeorm";
+import { ObjectId } from "mongodb";
 
-@Entity({ name: 'themes' })
-@Unique(['email'])
+/**
+ * Embedded custom theme item stored in `customThemes` array column.
+ */
+export class CustomThemeItem {
+  themeId!: string; // e.g. "ntcjs"
+  label!: string; // human-readable name
+  hex!: string; // normalized #RRGGBB
+  createdAt!: Date;
+  updatedAt!: Date;
+}
+
+@Entity({ name: "themes" })
+@Unique(["email"])
 export class Theme {
   @ObjectIdColumn()
   id!: ObjectId;
@@ -20,17 +31,27 @@ export class Theme {
   @Index()
   email!: string;
 
-  @Column({ default: 'light' })
+  // server-side selected themeId / color (keeps backward compatibility)
+  @Column({ default: "light" })
   themeId!: string;
 
   @Column({ nullable: true })
   label?: string | null;
 
-  @Column({ nullable: true })
-  img?: string | null;
+  // remove img field as requested (was previously present)
+  // @Column({ nullable: true })
+  // img?: string | null;
 
-  @Column({ default: '#c96a2b' })
+  @Column({ default: "#c96a2b" })
   colorHex!: string;
+
+  /**
+   * New: customThemes array (stored as JSON)
+   * - each item conforms to CustomThemeItem
+   * - simple-json is easiest for storing an array of small objects with TypeORM + Mongo
+   */
+  @Column({ type: "simple-json", default: "[]" })
+  customThemes!: CustomThemeItem[];
 
   @CreateDateColumn()
   createdAt!: Date;

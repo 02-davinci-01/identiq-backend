@@ -7,21 +7,31 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
+import ntc from "ntcjs";
+
 import { Theme } from "./entities/theme.entity";
 import { User } from "../users/entities/user.entity";
+import { CreateCustomThemeDto } from "./dto/create-custom-theme.dto";
+
+export interface CustomThemeItem {
+  themeId: string;
+  label: string;
+  hex: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 /**
- * Server-side canonical theme list.
- * Keep this in sync with the frontend THEMES constant.
+ * Keep the canonical static theme hexes here so both updateByEmail
+ * and the rest of the service use the exact same values.
+ *
+ * Use the same THEMES you provided on the frontend.
  */
-export const THEMES = [
-  { id: "teal", label: "Teal", img: "/themeChange.webp", color: "#2f6f66" },
-  { id: "light", label: "Light", img: "/themeChange.webp", color: "#c96a2b" }, // default
-  { id: "dark", label: "Dark", img: "/themeChange.webp", color: "#000000" },
-];
-
-export const DEFAULT_THEME_ID = "light";
-export const DEFAULT_THEME_COLOR = "#c96a2b";
+const STATIC_THEMES: { [themeId: string]: string } = {
+  teal: "#2F6F66",
+  light: "#C96A2B",
+  dark: "#000000",
+};
 
 @Injectable()
 export class ThemeService {
@@ -35,173 +45,218 @@ export class ThemeService {
     private readonly userRepo: Repository<User>,
   ) {}
 
-  /** Return the server-side canonical themes (useful for clients) */
-  getAvailableThemes() {
-    return THEMES;
+  // -------------------------
+  // Helpers
+  // -------------------------
+  private normalizeHex(raw: string) {
+    if (!raw) throw new BadRequestException("hex required");
+    let h = raw.trim();
+    if (!h.startsWith("#")) h = "#" + h;
+    h = h.toUpperCase();
+    if (!/^#[0-9A-F]{6}$/.test(h)) {
+      throw new BadRequestException("hex must be a 6-digit hex like #4287F5");
+    }
+    return h;
   }
 
-  /**
-   * Get the theme for an email. If not present, return default values (no DB write).
-   * Returns an object shaped like the Theme entity (partial if not persisted).
-   */
-  async getByEmail(email: string) {
+  private capitalizeFirst(value: string) {
+    if (!value) return value;
+    const lower = value.trim().toLowerCase();
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }
+
+  // -------------------------
+  // Default creation
+  // -------------------------
+  async createDefaultForEmail(email: string): Promise<Theme> {
     if (!email) throw new BadRequestException("Email required");
 
+    let existing = await this.themeRepo.findOne({ where: { email } });
+    if (existing) return existing;
+
+    const now = new Date();
+    const newTheme = this.themeRepo.create({
+      email,
+      themeId: "light",
+      label: "Light",
+      colorHex: STATIC_THEMES.light,
+      customThemes: [],
+      createdAt: now,
+      updatedAt: now,
+    } as Partial<Theme>);
+
+    const saved = await this.themeRepo.save(newTheme);
+    this.logger.log(`Created default theme for ${email}`);
+    return saved;
+  }
+
+  // -------------------------
+  // Reads
+  // -------------------------
+  async getByEmail(email: string) {
+    if (!email) throw new BadRequestException("Email required");
     const theme = await this.themeRepo.findOne({ where: { email } });
     if (theme) return theme;
 
-    const defaultTheme = THEMES.find((t) => t.id === DEFAULT_THEME_ID)!;
     return {
       email,
-      themeId: defaultTheme.id,
-      label: defaultTheme.label,
-      img: defaultTheme.img,
-      colorHex: defaultTheme.color,
+      themeId: "light",
+      label: "Light",
+      colorHex: STATIC_THEMES.light,
+      customThemes: [],
     } as Partial<Theme>;
   }
 
-  /**
-   * Create or replace the default theme row for an email.
-   * Updates user's colorHex as well if user exists.
-   */
-  async createDefaultForEmail(email: string) {
+  async getCustomThemes(email: string) {
     if (!email) throw new BadRequestException("Email required");
-    const defaultTheme = THEMES.find((t) => t.id === DEFAULT_THEME_ID)!;
-
-    try {
-      const existingUser = await this.userRepo.findOne({ where: { email } });
-      const existing = await this.themeRepo.findOne({ where: { email } });
-
-      if (existing && existingUser) {
-        existing.themeId = defaultTheme.id;
-        existing.label = defaultTheme.label;
-        existing.img = defaultTheme.img;
-        existing.colorHex = defaultTheme.color;
-        await this.themeRepo.save(existing);
-        await this.userRepo.save(existingUser);
-        this.logger.log(
-          `Rewrote existing theme for ${email} -> ${defaultTheme.id}`,
-        );
-      } else {
-        const created = this.themeRepo.create({
-          email,
-          themeId: defaultTheme.id,
-          label: defaultTheme.label,
-          img: defaultTheme.img,
-          colorHex: defaultTheme.color,
-        } as Theme);
-        await this.themeRepo.save(created);
-        this.logger.log(
-          `Created default theme for ${email} -> ${defaultTheme.id}`,
-        );
-      }
-
-      // Keep user.colorHex in sync
-      const user = await this.userRepo.findOne({ where: { email } });
-      if (user) {
-        user.colorHex = defaultTheme.color;
-        await this.userRepo.save(user);
-      } else {
-        this.logger.warn(`createDefaultForEmail: user not found for ${email}`);
-      }
-
-      return { ok: true };
-    } catch (err) {
-      this.logger.error(`createDefaultForEmail failed for ${email}`, err);
-      throw err;
-    }
+    const row = await this.themeRepo.findOne({ where: { email } });
+    return (row?.customThemes ?? []) as CustomThemeItem[];
   }
 
-  /**
-   * Update theme for the given email.
-   * Accepts either themeId (one of canonical themes) or a custom colorHex.
-   * Returns the updated theme summary.
-   */
+  // -------------------------
+  // Update selected theme (persist selection)
+  // - If themeId corresponds to a static theme, persist the canonical hex from STATIC_THEMES.
+  // - If colorHex is provided, normalize and persist that.
+  // - Create the row if missing.
+  // -------------------------
   async updateByEmail(
     email: string,
     payload: { themeId?: string; colorHex?: string },
   ) {
-    if (!email) throw new BadRequestException("Email required");
-    if (!payload?.themeId && !payload?.colorHex)
-      throw new BadRequestException("Either themeId or colorHex required");
+    if (!email) throw new BadRequestException("No email in token");
+    const { themeId, colorHex } = payload ?? {};
 
-    // Determine resulting theme values
-    const chosen = payload.themeId
-      ? (THEMES.find((t) => t.id === payload.themeId) ?? null)
-      : null;
-    const resultingColor =
-      payload.colorHex ?? chosen?.color ?? DEFAULT_THEME_COLOR;
-    const resultingLabel = chosen?.label ?? "Custom";
-    const resultingImg = chosen?.img ?? null;
-    const resultingThemeId =
-      chosen?.id ?? (payload.colorHex ? "custom" : DEFAULT_THEME_ID);
-
-    try {
-      const existing = await this.themeRepo.findOne({ where: { email } });
-      const existingUser = await this.userRepo.findOne({ where: { email } });
-
-      if (existing && existingUser) {
-        existing.themeId = resultingThemeId;
-        existing.label = resultingLabel;
-        existing.img = resultingImg;
-        existing.colorHex = resultingColor;
-        existingUser.colorHex = resultingColor;
-        await this.themeRepo.save(existing);
-        await this.userRepo.save(existingUser);
-        this.logger.log(`Updated theme for ${email} -> ${resultingThemeId}`);
-      } else {
-        const created = this.themeRepo.create({
-          email,
-          themeId: resultingThemeId,
-          label: resultingLabel,
-          img: resultingImg,
-          colorHex: resultingColor,
-        } as Theme);
-        await this.themeRepo.save(created);
-        this.logger.log(`Created theme for ${email} -> ${resultingThemeId}`);
-      }
-
-      // keep user.colorHex in sync
-      const user = await this.userRepo.findOne({ where: { email } });
-      if (user) {
-        user.colorHex = resultingColor;
-        await this.userRepo.save(user);
-      } else {
-        this.logger.warn(`updateByEmail: user not found for ${email}`);
-      }
-
-      return {
-        ok: true,
-        theme: {
-          themeId: resultingThemeId,
-          label: resultingLabel,
-          img: resultingImg,
-          colorHex: resultingColor,
-        },
-      };
-    } catch (err) {
-      this.logger.error(`updateByEmail failed for ${email}`, err);
-      throw err;
+    if (!themeId && !colorHex) {
+      throw new BadRequestException(
+        "At least one of themeId or colorHex must be provided",
+      );
     }
-  }
 
-  /** Helper: find themes by email (returns array - usually single element) */
-  async findByEmail(email: string) {
-    if (!email) throw new BadRequestException("Email required");
-    return this.themeRepo.find({ where: { email } });
-  }
-
-  /** Delete themes by email (used during account deletion) */
-  async deleteByEmail(email: string) {
-    if (!email) throw new BadRequestException("Email required");
-    try {
-      const res = await this.themeRepo.delete({ email });
-      const affected = res?.affected ?? undefined;
-      this.logger.log(`Deleted theme rows for ${email} (affected=${affected})`);
-      return { ok: true, deletedCount: affected };
-    } catch (err) {
-      this.logger.error(`deleteByEmail failed for ${email}`, err);
-      throw err;
+    let normalizedHex: string | undefined;
+    if (typeof colorHex !== "undefined" && colorHex !== null) {
+      normalizedHex = this.normalizeHex(colorHex);
     }
+
+    // If themeId is one of the static themes, override normalizedHex with the canonical static hex.
+    if (themeId && StaticThemeHas(themeId)) {
+      normalizedHex = STATIC_THEMES[themeId];
+    }
+
+    let themeRow = await this.themeRepo.findOne({ where: { email } });
+    const now = new Date();
+
+    if (!themeRow) {
+      themeRow = this.themeRepo.create({
+        email,
+        themeId: themeId || "light",
+        label: themeId ? this.capitalizeFirst(themeId) : "Light",
+        colorHex: normalizedHex || STATIC_THEMES.light,
+        customThemes: [],
+        createdAt: now,
+        updatedAt: now,
+      } as Partial<Theme>);
+    } else {
+      if (themeId) {
+        themeRow.themeId = themeId;
+        // ensure label matches themeId for static ones (keep human readable)
+        themeRow.label = this.capitalizeFirst(themeId);
+      }
+      if (normalizedHex) {
+        themeRow.colorHex = normalizedHex;
+      }
+      themeRow.updatedAt = now;
+    }
+
+    await this.themeRepo.save(themeRow);
+    return themeRow;
   }
+
+  // -------------------------
+  // Create custom theme
+  // -------------------------
+  async createCustomTheme(email: string, dto: CreateCustomThemeDto) {
+    if (!email) throw new BadRequestException("No email in token");
+
+    const hex = this.normalizeHex(dto.hex);
+
+    let themeRow = await this.themeRepo.findOne({ where: { email } });
+    if (!themeRow) themeRow = await this.createDefaultForEmail(email);
+
+    if (!Array.isArray(themeRow.customThemes)) themeRow.customThemes = [];
+
+    const exists = themeRow.customThemes.find(
+      (t: any) => (t.hex || "").toUpperCase() === hex,
+    );
+    if (exists) {
+      throw new BadRequestException(
+        "A custom theme with the same hex already exists",
+      );
+    }
+
+    const source = dto.themeId?.trim() || "ntcjs";
+
+    // Derive name from ntcjs; then normalize to "First-letter uppercase, rest lowercase"
+    let derived = hex;
+    try {
+      const [, name] = ntc.name(hex);
+      derived = name || hex;
+    } catch (err) {
+      this.logger.warn("ntcjs lookup failed", err);
+      derived = hex;
+    }
+
+    const label = this.capitalizeFirst(derived);
+
+    const now = new Date();
+    const item: CustomThemeItem = {
+      themeId: source,
+      label,
+      hex,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    themeRow.customThemes.push(item);
+    await this.themeRepo.save(themeRow);
+
+    return { item, themeRow };
+  }
+
+  // -------------------------
+  // Remove custom theme
+  // - If removed hex equals themeRow.colorHex, reset to 'light' and its canonical hex.
+  // -------------------------
+  async removeCustomTheme(email: string, hexOrId: string) {
+    if (!email) throw new BadRequestException("No email in token");
+    const normalized = this.normalizeHex(hexOrId);
+
+    const themeRow = await this.themeRepo.findOne({ where: { email } });
+    if (!themeRow) throw new NotFoundException("Theme row not found");
+
+    if (!Array.isArray(themeRow.customThemes)) themeRow.customThemes = [];
+
+    const idx = themeRow.customThemes.findIndex(
+      (t: any) => (t.hex || "").toUpperCase() === normalized,
+    );
+    if (idx === -1) throw new NotFoundException("Custom theme not found");
+
+    const removed = themeRow.customThemes.splice(idx, 1)[0];
+
+    // If the removed hex equals the currently-selected colorHex, revert to light.
+    if ((themeRow.colorHex || "").toUpperCase() === normalized) {
+      themeRow.themeId = "light";
+      themeRow.colorHex = STATIC_THEMES.light;
+      themeRow.label = this.capitalizeFirst("light");
+    }
+
+    await this.themeRepo.save(themeRow);
+
+    return removed;
+  }
+}
+
+/** utility: check if a themeId corresponds to a static theme */
+function StaticThemeHas(id?: string) {
+  if (!id) return false;
+  return Object.prototype.hasOwnProperty.call(STATIC_THEMES, id);
 }
