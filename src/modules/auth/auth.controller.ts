@@ -97,6 +97,7 @@ export class AuthController {
       width: 160,
       height: 60,
       fontSize: 48,
+      charPreset: "ABCDEFGHJKMNPQRSTUVWXYZ23456789",
     });
 
     // expiry in ms
