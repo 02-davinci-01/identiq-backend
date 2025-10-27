@@ -10,7 +10,7 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { User } from "../users/entities/user.entity";
-import { Any, MoreThan, Repository } from "typeorm";
+import { MoreThan, Repository } from "typeorm";
 import { randomBytes } from "crypto";
 import * as bcrypt from "bcryptjs";
 import { ConfigService } from "@nestjs/config";
@@ -22,7 +22,11 @@ import { ObjectId } from "mongodb";
 import { DataSource } from "typeorm";
 import { Theme } from "../themes/entities/theme.entity";
 import { ThemeService } from "../themes/themes.service";
+import type { SignOptions } from "jsonwebtoken";
+
 import axios from "axios";
+
+type PersistedAuth = Auth & { _id?: ObjectId | null; id?: string | null };
 
 @Injectable()
 export class AuthService {
@@ -54,7 +58,7 @@ export class AuthService {
     const { name, email } = dto;
     if (!email) throw new BadRequestException("Email is required");
 
-    let authUser = await this.authRepo.findOne({ where: { email } as any });
+    let authUser = await this.authRepo.findOne({ where: { email } });
 
     // If already verified, nothing to do
     if (authUser && authUser.emailVerified) {
@@ -109,7 +113,7 @@ export class AuthService {
         },
       });
     } catch (err) {
-      this.logger.error("Brevo send error", err as any);
+      this.logger.error("Brevo send error", err);
       throw new BadRequestException("Failed to send verification email");
     }
 
@@ -124,7 +128,7 @@ export class AuthService {
     if (!email || !token)
       throw new BadRequestException("Missing token or email");
 
-    const authUser = await this.authRepo.findOne({ where: { email } as any });
+    const authUser = await this.authRepo.findOne({ where: { email } });
 
     if (!authUser) throw new BadRequestException("Invalid token or email");
     if (!authUser.verifyEmailTokenHash || !authUser.verifyEmailExpiry)
@@ -179,162 +183,119 @@ export class AuthService {
   async validateUser(email: string, password: string): Promise<Auth | null> {
     if (!email || !password) return null;
 
-    const auth = await this.authRepo.findOne({ where: { email } as any });
+    const auth = await this.authRepo.findOne({ where: { email } });
     if (!auth) return null;
 
-    const matches = await bcrypt.compare(
-      password,
-      (auth as any).passwordHash || "",
-    );
+    const matches = await bcrypt.compare(password, auth.passwordHash || "");
     return matches ? auth : null;
   }
 
   /**
    * Login: create jid, persist to auth.jids, sign JWT
    */
-  async login(authRow: any) {
-    if (!authRow || !authRow._id)
-      throw new BadRequestException("Invalid auth object");
+  // inside AuthService
 
-    // reload to get latest jids (use ObjectId conversion if necessary)
-    const dbAuth = await this.authRepo.findOne({
-      where: { _id: (authRow as any)._id } as any,
-    });
+  // helper type: Auth may have a Mongo ObjectId (_id) or an SQL id (id: string)
+
+  async login(authRow: Partial<Auth> | null): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    jid: string;
+    expiresIn: string | number;
+    user: { id: string; email?: string; name?: string };
+  }> {
+    if (!authRow || !(authRow as Partial<Auth>)._id) {
+      // keep a small runtime defensive check because callers sometimes pass different shapes
+      throw new BadRequestException("Invalid auth object");
+    }
+
+    // reload from DB to get the latest jids (ensure type is Repository<Auth>)
+    const dbAuth = (await this.authRepo.findOne({
+      where: {
+        _id: (authRow as Partial<Auth>)._id,
+      },
+    })) as PersistedAuth | null;
+
     if (!dbAuth) throw new NotFoundException("Auth record not found");
 
+    // normalize jids to an array
     dbAuth.jids = Array.isArray(dbAuth.jids) ? dbAuth.jids : [];
 
     // optional: enforce max sessions
-    const MAX_SESSIONS = Number(this.config.get<number>("MAX_SESSIONS") || 10);
+    const maxSessionsRaw = this.config.get<string | number | undefined>(
+      "MAX_SESSIONS",
+    );
+    const MAX_SESSIONS = Number(maxSessionsRaw ?? 10);
+    if (!Number.isFinite(MAX_SESSIONS) || MAX_SESSIONS <= 0) {
+      // fallback to sane default
+      // eslint-disable-next-line no-param-reassign
+      // (no-op, MAX_SESSIONS already defaulted)
+    }
     if (dbAuth.jids.length >= MAX_SESSIONS) dbAuth.jids.shift();
 
-    // create a new jid for this session
+    // create a new jid (session id) and persist
     const jid = uuidv4();
     dbAuth.jids.push(jid);
     await this.authRepo.save(dbAuth);
 
+    // derive stable user id string (prefer _id, then id)
+    const userId =
+      dbAuth._id != null
+        ? typeof dbAuth._id === "string"
+          ? dbAuth._id
+          : (dbAuth._id as ObjectId).toString()
+        : String(dbAuth.id ?? "");
+
     const payload = {
-      sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
+      sub: userId,
       email: dbAuth.email,
       name: dbAuth.name,
       jid,
     };
 
-    // normalize / cast expiresIn so TS accepts the call
-    const rawExpires = this.config.get<string | number>("JWT_EXPIRES_IN");
-    const expiresIn = rawExpires ?? "1h"; // fallback
+    // get expiresIn from config; ConfigService.get is generic so we ask for string|number|undefined
+    const rawExpires = this.config.get<string | number | undefined>(
+      "JWT_EXPIRES_IN",
+    );
+    const expiresIn: string | number = rawExpires ?? "1h";
 
-    // sign access token (short-lived)
-    const accessToken = this.jwtService.sign(payload, {
-      expiresIn: expiresIn as any,
+    const payloadObj = payload as Record<string, unknown>;
+
+    // JwtService.sign accepts JwtSignOptions which types expiresIn as string|number
+    const accessToken = this.jwtService.sign(payloadObj, {
+      expiresIn: expiresIn as SignOptions["expiresIn"],
     });
 
-    // create refresh token (long-lived). We sign a token that contains sub and jid.
-    // Refresh TTL: use REFRESH_TOKEN_TTL env var or default to 30d
-    const rawRefreshTtl = this.config.get<string | number>("REFRESH_TOKEN_TTL");
-    const refreshTtl = rawRefreshTtl ?? "30d";
+    // refresh token TTL (string like '30d' or number seconds)
+    const rawRefreshTtl = this.config.get<string | number | undefined>(
+      "REFRESH_TOKEN_TTL",
+    );
+    const refreshTtl: string | number = rawRefreshTtl ?? "30d";
 
     const refreshPayload = {
-      sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
-      jid, // include jid so we can validate session during refresh
+      sub: userId,
+      jid,
     };
 
-    const refreshToken = this.jwtService.sign(refreshPayload, {
-      expiresIn: refreshTtl as any,
-    });
+    const refreshToken = this.jwtService.sign(
+      refreshPayload as Record<string, unknown>,
+      {
+        expiresIn: refreshTtl as SignOptions["expiresIn"],
+      },
+    );
 
-    // Optional: persist the refresh token in DB (or its hash) for revocation.
-    // You already persist jids; if you want extra safety you can save hashed refresh tokens.
-    // Example placeholder:
-    // if (this.saveRefreshTokenForUser) await this.saveRefreshTokenForUser(dbAuth._id, refreshToken);
-
+    // return typed shape
     return {
       accessToken,
       refreshToken,
       jid,
-      expiresIn: expiresIn,
-      // optionally return user info if you want the frontend to have it immediately
+      expiresIn,
       user: {
-        id: dbAuth._id ? dbAuth._id.toString() : (dbAuth as any).id,
+        id: userId,
         email: dbAuth.email,
-        // add other public fields if desired (name, roles, etc.)
+        name: dbAuth.name,
       },
     };
-  }
-
-  async refreshTokens(refreshToken: string) {
-    if (!refreshToken)
-      throw new UnauthorizedException("No refresh token provided");
-
-    try {
-      // verify the refresh token (will throw if invalid/expired)
-      const payload: any = this.jwtService.verify(refreshToken);
-
-      const userId = payload.sub;
-      const jid = payload.jid;
-
-      // fetch auth record and validate that jid is still present
-      const dbAuth = await this.authRepo.findOne({
-        where: { _id: userId } as any,
-      });
-
-      if (!dbAuth) throw new UnauthorizedException("Auth record not found");
-
-      if (!Array.isArray(dbAuth.jids) || !dbAuth.jids.includes(jid)) {
-        throw new UnauthorizedException("Session revoked or invalid");
-      }
-
-      // Build new access token payload (preserve jid)
-      const accessPayload = {
-        sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
-        email: dbAuth.email,
-        jid,
-      };
-
-      const accessExpiresRaw =
-        this.config.get<string | number>("JWT_EXPIRES_IN") ?? "1h";
-      const accessExpiresIn = accessExpiresRaw as any;
-
-      const newAccessToken = this.jwtService.sign(accessPayload, {
-        expiresIn: accessExpiresIn,
-      });
-
-      // Rotate refresh token (same jid kept here; if you prefer to rotate jid, generate new jid and update dbAuth.jids)
-      const refreshTtlRaw =
-        this.config.get<string | number>("REFRESH_TOKEN_TTL") ?? "30d";
-      const refreshTtl = refreshTtlRaw as any;
-
-      const newRefreshToken = this.jwtService.sign(
-        {
-          sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
-          jid,
-        },
-        { expiresIn: refreshTtl },
-      );
-
-      // Optional: persist rotated refresh token or update dbAuth.jids if rotating jid.
-      // (I left persistence of refresh tokens out so you can implement it as you prefer.)
-
-      const user = {
-        id: dbAuth._id ? dbAuth._id.toString() : (dbAuth as any).id,
-        email: dbAuth.email,
-      };
-
-      // expiresIn in seconds — convert if your config provides a string TTL you want to expose
-      const expiresIn =
-        typeof accessExpiresIn === "number" ? accessExpiresIn : 60 * 60;
-
-      return {
-        accessToken: newAccessToken,
-        refreshToken: newRefreshToken,
-        user,
-        jid,
-        expiresIn,
-      };
-    } catch (err) {
-      // normalize errors into UnauthorizedException
-      throw new UnauthorizedException("Invalid or expired refresh token");
-    }
   }
 
   /**
@@ -345,9 +306,9 @@ export class AuthService {
       throw new BadRequestException("Missing authId or jid");
 
     // Try to handle both string id and ObjectId if needed
-    let query: any = { _id: authIdStr };
+    let query: Object = { _id: authIdStr };
     // If stored _id is an ObjectId, TypeORM/Mongo driver will accept string as well.
-    const auth = await this.authRepo.findOne({ where: query as any });
+    const auth = await this.authRepo.findOne({ where: query });
     if (!auth) throw new NotFoundException("Auth record not found");
 
     auth.jids = (auth.jids || []).filter((j: string) => j !== jid);
@@ -361,7 +322,9 @@ export class AuthService {
   async isJidValid(authIdStr: string, jid: string): Promise<boolean> {
     if (!authIdStr || !jid) return false;
 
-    const whereClause: any = ObjectId.isValid(authIdStr)
+    //made it object
+
+    const whereClause: Object = ObjectId.isValid(authIdStr)
       ? { _id: new ObjectId(authIdStr) }
       : { _id: authIdStr };
 
@@ -373,34 +336,20 @@ export class AuthService {
     return Array.isArray(auth.jids) && auth.jids.includes(jid);
   }
 
-  /**
-   * Re-verify password helper for sensitive flows
-   */
-  async reverifyPassword(
-    authIdStr: string,
-    plainPassword: string,
-  ): Promise<boolean> {
-    const auth = await this.authRepo.findOne({
-      where: { _id: authIdStr } as any,
-    });
-    if (!auth) throw new NotFoundException("Auth record not found");
-    return bcrypt.compare(plainPassword, (auth as any).passwordHash || "");
-  }
-
   /** Change name: update Auth.name and User.name (keeps both in sync) */
   async changeName(email: string, newName: string) {
     if (!email || !newName) throw new BadRequestException("Missing params");
 
     // update auth repo
-    const auth = await this.authRepo.findOne({ where: { email } as any });
+    const auth = await this.authRepo.findOne({ where: { email } });
     if (!auth) throw new NotFoundException("Auth record not found");
-    (auth as any).name = newName;
+    auth.name = newName;
     await this.authRepo.save(auth);
 
     // update user repo if exists
-    const user = await this.userRepo.findOne({ where: { email } as any });
+    const user = await this.userRepo.findOne({ where: { email } });
     if (user) {
-      (user as any).name = newName;
+      (user as User).name = newName;
       await this.userRepo.save(user);
     }
 
@@ -416,7 +365,7 @@ export class AuthService {
   ) {
     if (!email || !newPassword) throw new BadRequestException("Missing params");
 
-    const auth = await this.authRepo.findOne({ where: { email } as any });
+    const auth = await this.authRepo.findOne({ where: { email } });
     if (!auth) throw new NotFoundException("Auth record not found");
 
     const isValid = await bcrypt.compare(oldPassword, auth.passwordHash!);
@@ -424,7 +373,7 @@ export class AuthService {
     if (!isValid) throw new ConflictException("Old password doesn't match");
 
     const hash = await bcrypt.hash(newPassword, this.PASSWORD_HASH_ROUNDS);
-    (auth as any).passwordHash = hash;
+    auth.passwordHash = hash;
     await this.authRepo.save(auth);
 
     return { ok: true };
@@ -436,11 +385,11 @@ export class AuthService {
 
     return await this.dataSource.transaction(async (manager) => {
       // delete themes
-      await manager.getRepository(Theme).delete({ email } as any);
+      await manager.getRepository(Theme).delete({ email });
       // delete user
-      await manager.getRepository(User).delete({ email } as any);
+      await manager.getRepository(User).delete({ email });
       // delete auth
-      await manager.getRepository(Auth).delete({ email } as any);
+      await manager.getRepository(Auth).delete({ email });
 
       // optionally: invalidate sessions / jids etc.
       return { ok: true };
@@ -485,13 +434,13 @@ export class AuthService {
 
     // find auth record for current user
     const authUser = await this.authRepo.findOne({
-      where: { email: normalizedCurrent } as any,
+      where: { email: normalizedCurrent },
     });
     if (!authUser) throw new NotFoundException("Auth record not found");
 
     // ensure no other account already uses the new email
     const already = await this.authRepo.findOne({
-      where: { email: normalizedNew } as any,
+      where: { email: normalizedNew },
     });
     if (already) throw new ConflictException("Requested email already in use");
 
@@ -533,7 +482,7 @@ export class AuthService {
         },
       });
     } catch (err) {
-      this.logger.error("Brevo send error (initiateEmailChange)", err as any);
+      this.logger.error("Brevo send error (initiateEmailChange)", err);
       // rollback token fields on failure so nothing is left hanging
       authUser.verifyEmailTokenHash = null;
       authUser.verifyEmailExpiry = null;
@@ -579,7 +528,7 @@ export class AuthService {
 
     // find the auth row by the new email supplied in query
     const authDoc = await this.authRepo.findOne({
-      where: { updEmail: normalizedEmail } as any,
+      where: { updEmail: normalizedEmail },
     });
 
     const oldEmail = authDoc?.email;
@@ -613,7 +562,7 @@ export class AuthService {
 
         // reload auth under transaction to avoid TOCTOU
         const auth = await authRepoTx.findOne({
-          where: { id: (authDoc as any).id } as any,
+          where: { _id: authDoc._id },
         });
         if (!auth) throw new BadRequestException("Auth record disappeared");
 
@@ -632,16 +581,15 @@ export class AuthService {
 
         // Find user & theme by the previous/current email (oldEmail). This mirrors your original logic.
         // Use transaction-local repos so updates are part of the same transaction.
-        let userDoc = null as any | null;
-        let themeDoc = null as any | null;
+        let userDoc, themeDoc;
 
         if (oldEmail) {
           userDoc = await userRepoTx.findOne({
-            where: { email: String(oldEmail).trim().toLowerCase() } as any,
+            where: { email: String(oldEmail).trim().toLowerCase() },
           });
 
           themeDoc = await themeRepoTx.findOne({
-            where: { email: String(oldEmail).trim().toLowerCase() } as any,
+            where: { email: String(oldEmail).trim().toLowerCase() },
           });
         }
 
@@ -652,7 +600,7 @@ export class AuthService {
         } else {
           // preserve current behavior (don't throw) but log so you can inspect missing rows
           this.logger.warn(
-            `confirmEmailChange: user not found for oldEmail=${oldEmail}, authId=${(auth as any).id}. Skipping user update.`,
+            `confirmEmailChange: user not found for oldEmail=${oldEmail}, authId=${(auth as Auth)._id}. Skipping user update.`,
           );
         }
 
@@ -661,7 +609,7 @@ export class AuthService {
           await themeRepoTx.save(themeDoc);
         } else {
           this.logger.warn(
-            `confirmEmailChange: theme not found for oldEmail=${oldEmail}, authId=${(auth as any).id}. Skipping theme update.`,
+            `confirmEmailChange: theme not found for oldEmail=${oldEmail}, authId=${(auth as Auth)._id}. Skipping theme update.`,
           );
         }
 
@@ -679,7 +627,7 @@ export class AuthService {
 
       return result;
     } catch (err) {
-      this.logger.error("confirmEmailChange transaction failed", err as any);
+      this.logger.error("confirmEmailChange transaction failed", err);
       throw new InternalServerErrorException("Failed to confirm email change");
     }
   }
@@ -693,8 +641,8 @@ export class AuthService {
     const normalizedEmail = String(email).trim().toLowerCase();
 
     // find existing auth row (may return null)
-    let authUser: any = await this.authRepo.findOne({
-      where: { email: normalizedEmail } as any,
+    let authUser = await this.authRepo.findOne({
+      where: { email: normalizedEmail },
     });
 
     // If no auth row exists, create a minimal auth record so we can attach the token
@@ -703,7 +651,7 @@ export class AuthService {
         name: undefined,
         email: normalizedEmail,
         emailVerified: false,
-      } as any);
+      });
     }
 
     // generate raw token and its hash (same as register)
@@ -742,7 +690,7 @@ export class AuthService {
         extraParams,
       });
     } catch (err) {
-      this.logger?.error("Brevo send error (forgot password)", err as any);
+      this.logger?.error("Brevo send error (forgot password)", err);
       // match registration behaviour: throw friendly error (or you can return neutral)
       throw new BadRequestException("Failed to send password reset email");
     }
@@ -771,14 +719,16 @@ export class AuthService {
     console.log(email);
 
     // find auth row by email
-    const authUser: any = await this.authRepo.findOne({
-      where: { email: normalizedEmail } as any,
+    const authUser = await this.authRepo.findOne({
+      where: { email: normalizedEmail },
     });
     if (!authUser) throw new NotFoundException("Invalid token or email");
     console.log("1st");
 
-    const storedHash: string | undefined = authUser.resetPasswordTokenHash;
-    const expiry: Date | string | undefined = authUser.resetPasswordExpiry;
+    const storedHash: string | null | undefined =
+      authUser.resetPasswordTokenHash;
+    const expiry: Date | string | null | undefined =
+      authUser.resetPasswordExpiry;
 
     if (!storedHash || !expiry) {
       throw new BadRequestException("Invalid token or email");
@@ -801,8 +751,6 @@ export class AuthService {
     // update authUser password and clear token fields
     if (typeof authUser.passwordHash !== "undefined") {
       authUser.passwordHash = newPasswordHash;
-    } else {
-      authUser.password = newPasswordHash; // fallback if your entity uses 'password'
     }
     authUser.resetPasswordTokenHash = null;
     authUser.resetPasswordExpiry = null;
@@ -811,23 +759,6 @@ export class AuthService {
     await this.authRepo.save(authUser);
 
     // synchronize with userRepo if present
-    if (this.userRepo) {
-      try {
-        const user: any = await this.userRepo.findOne({
-          where: { email: normalizedEmail } as any,
-        });
-        if (user) {
-          if (typeof user.passwordHash !== "undefined")
-            user.passwordHash = newPasswordHash;
-          else user.password = newPasswordHash;
-          user.emailVerified = true;
-          await this.userRepo.save(user);
-        }
-      } catch (err) {
-        // log but don't fail — primary auth repo updated successfully
-        this.logger?.error("Failed to sync password to userRepo", err as any);
-      }
-    }
 
     return { message: "password updated successfully", status: true };
   }

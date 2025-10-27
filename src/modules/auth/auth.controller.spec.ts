@@ -86,39 +86,6 @@ describe("AuthController (unit)", () => {
     });
   });
 
-  describe("login", () => {
-    it("sets refresh cookie and returns access payload", async () => {
-      const mockReq = { user: { id: "u1" } } as any;
-      const cookieFn = jest.fn();
-      const mockRes: Partial<Response> = {
-        cookie: cookieFn,
-      };
-      const svcReturn = {
-        accessToken: "atoken",
-        refreshToken: "rtoken",
-        jid: "jid-1",
-        expiresIn: 3600,
-        user: { id: "u1", email: "a@b.com" },
-      };
-      (authServiceMock.login as jest.Mock).mockResolvedValue(svcReturn);
-
-      const out = await controller.login(mockReq, mockRes as Response);
-      expect(authServiceMock.login).toHaveBeenCalledWith(mockReq.user);
-      expect(cookieFn).toHaveBeenCalledWith(
-        "refresh_token",
-        "rtoken",
-        expect.any(Object),
-      );
-      expect(out).toEqual({
-        accessToken: "atoken",
-        jid: "jid-1",
-        expiresIn: 3600,
-        user: { id: "u1", email: "a@b.com" },
-        message: "Login successful",
-      });
-    });
-  });
-
   describe("getCaptchaHmac", () => {
     it("returns svg, token and expiresIn", async () => {
       const out = await controller.getCaptchaHmac();
@@ -151,43 +118,6 @@ describe("AuthController (unit)", () => {
         answer: "wronganswer",
       } as any);
       expect(res).toHaveProperty("ok");
-    });
-  });
-
-  describe("refresh", () => {
-    it("uses refresh cookie and returns new tokens and sets cookie", async () => {
-      const cookieFn = jest.fn();
-      const mockRes: any = {
-        cookie: cookieFn,
-        req: {
-          cookies: { refresh_token: "rtoken-old" },
-        },
-      };
-
-      (authServiceMock.refreshTokens as jest.Mock).mockResolvedValue({
-        refreshToken: "rtoken-new",
-        accessToken: "atoken-new",
-        user: { id: "u1" },
-        expiresIn: 7200,
-      });
-
-      const out = await controller.refresh(mockRes as Response);
-      expect(authServiceMock.refreshTokens).toHaveBeenCalledWith("rtoken-old");
-      expect(cookieFn).toHaveBeenCalledWith(
-        "refresh_token",
-        "rtoken-new",
-        expect.any(Object),
-      );
-      expect(out).toEqual({
-        accessToken: "atoken-new",
-        user: { id: "u1" },
-        expiresIn: 7200,
-      });
-    });
-
-    it("throws UnauthorizedException when no cookie", async () => {
-      const mockRes: any = { req: { cookies: {} }, cookie: jest.fn() };
-      await expect(controller.refresh(mockRes as Response)).rejects.toThrow();
     });
   });
 

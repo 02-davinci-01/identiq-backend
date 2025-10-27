@@ -15,6 +15,7 @@ import { CurrentUser } from "../common/decorator/current-user-decorator";
 import { UserResponseDto } from "./dto/user-response-dto";
 import { DeleteUserDto } from "./dto/delete-user.dto";
 import { Public } from "../common/decorator/public.decorator";
+import { User } from "./entities/user.entity";
 
 @Controller("users")
 export class UsersController {
@@ -35,7 +36,7 @@ export class UsersController {
    * - Returns { name, email } (wrapped by UserResponseDto)
    */
   @Get("me")
-  async getProfile(@CurrentUser() jwtPayloadOrUser: any) {
+  async getProfile(@CurrentUser() jwtPayloadOrUser) {
     try {
       // If the decorator forwards a full user object, use it;
       // otherwise prefer the email from the JWT payload and fetch canonical record.
@@ -77,13 +78,13 @@ export class UsersController {
       }
 
       // Map canonical DB record to response DTO (limit fields)
-      const name = (user as any).name ?? (user as any).displayName ?? null;
-      const email = (user as any).email;
-      const id = (user as any).id ?? (user as any)._id ?? null;
+      const name = (user as User).name ?? null;
+      const email = (user as User).email;
+      const id = (user as any).id ?? (user as User)._id ?? null;
 
       return new UserResponseDto({ id, email, name });
     } catch (err) {
-      this.logger.error("Failed to fetch profile for /users/me", err as any);
+      this.logger.error("Failed to fetch profile for /users/me", err);
       // follow your project's error handling rules (Sentry etc). Return a generic server error.
       throw new InternalServerErrorException("Could not fetch user profile");
     }
@@ -108,11 +109,11 @@ export class UsersController {
     const users = await this.userService.getAllUsers(limitNum, offsetNum);
 
     return users.map((u) => ({
-      id: (u as any).id ?? (u as any)._id ?? null,
-      name: (u as any).name ?? "",
-      email: (u as any).email ?? "",
-      colorHex: (u as any).colorHex ?? "#c96a2b",
-      createdAt: (u as any).createdAt ?? null,
+      id: (u as User)._id ?? (u as User)._id ?? null,
+      name: (u as User).name ?? "",
+      email: (u as User).email ?? "",
+      colorHex: (u as User).colorHex ?? "#c96a2b",
+      createdAt: (u as User).createdAt ?? null,
     }));
   }
 
@@ -141,11 +142,11 @@ export class UsersController {
 
       // Normalize/shape for client
       return users.map((u) => ({
-        id: (u as any).id ?? (u as any)._id ?? null,
-        name: (u as any).name ?? "",
-        email: (u as any).email ?? "",
-        colorHex: (u as any).colorHex ?? "#c96a2b",
-        createdAt: (u as any).createdAt ?? null,
+        id: (u as User)._id ?? (u as User)._id ?? null,
+        name: (u as User).name ?? "",
+        email: (u as User).email ?? "",
+        colorHex: (u as User).colorHex ?? "#c96a2b",
+        createdAt: (u as User).createdAt ?? null,
       }));
     } catch (error) {
       console.error(

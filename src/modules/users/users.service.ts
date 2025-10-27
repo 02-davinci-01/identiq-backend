@@ -10,6 +10,7 @@ import { User } from "./entities/user.entity";
 import { Auth } from "../auth/entities/auth.entity";
 import { Theme } from "../themes/entities/theme.entity";
 import { DataSource } from "typeorm";
+import { ObjectId } from "mongodb";
 
 @Injectable()
 export class UsersService {
@@ -40,7 +41,7 @@ export class UsersService {
     try {
       // If your User entity maps _id as ObjectId, adapt as needed.
       // Current repo.findOne usage from your uploaded file preserved.
-      return this.userRepo.findOne({ where: { _id: id } as any });
+      return this.userRepo.findOne({ where: { _id: new ObjectId(id) } });
     } catch (err) {
       this.logger.warn(`findById failed for id=${id}: ${err?.message ?? err}`);
       return null;
@@ -56,9 +57,9 @@ export class UsersService {
     try {
       // Use a minimal projection if you want to avoid sending sensitive fields.
       // TypeORM's select/projection usage differs by driver; here we fetch the entity and map.
-      return this.userRepo.findOne({ where: { email } as any });
+      return this.userRepo.findOne({ where: { email } });
     } catch (err) {
-      this.logger.error(`Error querying user by email=${email}`, err as any);
+      this.logger.error(`Error querying user by email=${email}`, err);
       throw err;
     }
   }
@@ -68,7 +69,7 @@ export class UsersService {
       // TypeORM: count(); Mongoose would be this.userModel.countDocuments()
       return await this.userRepo.count();
     } catch (err) {
-      this.logger.error("countUsers failed", err as any);
+      this.logger.error("countUsers failed", err);
       throw err;
     }
   }
@@ -83,8 +84,14 @@ export class UsersService {
 
       // Use skip & take for pagination with TypeORM
       const users = await this.userRepo.find({
-        select: ["id", "name", "email", "colorHex", "createdAt"] as any,
-        order: { createdAt: "DESC" } as any,
+        select: [
+          "id",
+          "name",
+          "email",
+          "colorHex",
+          "createdAt",
+        ] as (keyof User)[],
+        order: { createdAt: "DESC" },
         skip,
         take,
       });
@@ -92,7 +99,7 @@ export class UsersService {
       // return both data and metadata so client can know about total if needed
       return users;
     } catch (err) {
-      this.logger.error("getAllUsers failed", err as any);
+      this.logger.error("getAllUsers failed", err);
       throw new InternalServerErrorException("Failed to fetch users");
     }
   }
@@ -116,29 +123,29 @@ export class UsersService {
         const themeRepoTx = manager.getRepository(Theme);
 
         // delete auth sessions/row(s) first (if you have a dedicated auth row)
-        await authRepoTx.delete({ email } as any);
+        await authRepoTx.delete({ email });
 
         // delete theme row(s)
-        await themeRepoTx.delete({ email } as any);
+        await themeRepoTx.delete({ email });
 
         // delete user row
-        const res = await userRepoTx.delete({ email } as any);
+        const res = await userRepoTx.delete({ email });
 
-        return { ok: true, deletedCount: (res as any)?.affected ?? 0 };
+        return { ok: true, deletedCount: res?.affected ?? 0 };
       });
     }
 
     // Mongo: sequential deletes (no transaction assumed)
     try {
-      await this.authRepo.delete({ email } as any);
-      await this.themeRepo.delete({ email } as any);
-      const res = await this.userRepo.delete({ email } as any);
+      await this.authRepo.delete({ email });
+      await this.themeRepo.delete({ email });
+      const res = await this.userRepo.delete({ email });
       return {
         ok: true,
-        deletedCount: (res as any)?.affected ?? (res as any)?.deletedCount ?? 0,
+        deletedCount: res?.affected ?? 0,
       };
     } catch (err) {
-      this.logger.error("deleteByEmail failed", err as any);
+      this.logger.error("deleteByEmail failed", err);
       throw new InternalServerErrorException("Failed to delete user");
     }
   }

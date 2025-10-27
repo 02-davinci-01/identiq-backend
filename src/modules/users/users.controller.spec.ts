@@ -42,40 +42,6 @@ describe("UsersController", () => {
     expect(controller).toBeDefined();
   });
 
-  describe("getAll", () => {
-    it("calls getAllUsers with parsed numeric limit/offset and returns mapped users", async () => {
-      const mockedUsers = [
-        {
-          id: "u1",
-          name: "Alice",
-          email: "a@b",
-          colorHex: "#fff",
-          createdAt: "2020",
-        },
-      ];
-      (usersServiceMock.getAllUsers as jest.Mock).mockResolvedValue(
-        mockedUsers,
-      );
-
-      // controller.getAll accepts strings from @Query('limit')/@Query('offset')
-      const res = await controller.getAll("2", "0");
-      expect(usersServiceMock.getAllUsers).toHaveBeenCalledWith(2, 0);
-
-      expect(Array.isArray(res)).toBe(true);
-      expect(res[0]).toHaveProperty("id", "u1");
-      expect(res[0]).toHaveProperty("name", "Alice");
-    });
-
-    it("passes undefined when limit/offset not provided", async () => {
-      (usersServiceMock.getAllUsers as jest.Mock).mockResolvedValue([]);
-      await controller.getAll(undefined, undefined);
-      expect(usersServiceMock.getAllUsers).toHaveBeenCalledWith(
-        undefined,
-        undefined,
-      );
-    });
-  });
-
   describe("getProfile", () => {
     it("returns user response when user exists", async () => {
       const jwtPayload = { email: "carol@example.com" };

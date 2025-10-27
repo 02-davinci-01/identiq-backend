@@ -1,0 +1,74 @@
+ // async refreshTokens(refreshToken: string) {
+  //   if (!refreshToken)
+  //     throw new UnauthorizedException("No refresh token provided");
+
+  //   try {
+  //     // verify the refresh token (will throw if invalid/expired)
+  //     const payload = this.jwtService.verify(refreshToken);
+
+  //     const userId = payload.sub;
+  //     const jid = payload.jid;
+
+  //     // fetch auth record and validate that jid is still present
+  //     const dbAuth = await this.authRepo.findOne({
+  //       where: { _id: userId },
+  //     });
+
+  //     if (!dbAuth) throw new UnauthorizedException("Auth record not found");
+
+  //     if (!Array.isArray(dbAuth.jids) || !dbAuth.jids.includes(jid)) {
+  //       throw new UnauthorizedException("Session revoked or invalid");
+  //     }
+
+  //     // Build new access token payload (preserve jid)
+  //     const accessPayload = {
+  //       sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
+  //       email: dbAuth.email,
+  //       jid,
+  //     };
+
+  //     const accessExpiresRaw =
+  //       this.config.get<string | number>("JWT_EXPIRES_IN") ?? "1h";
+  //     const accessExpiresIn = accessExpiresRaw as any;
+
+  //     const newAccessToken = this.jwtService.sign(accessPayload, {
+  //       expiresIn: accessExpiresIn,
+  //     });
+
+  //     // Rotate refresh token (same jid kept here; if you prefer to rotate jid, generate new jid and update dbAuth.jids)
+  //     const refreshTtlRaw =
+  //       this.config.get<string | number>("REFRESH_TOKEN_TTL") ?? "30d";
+  //     const refreshTtl = refreshTtlRaw as any;
+
+  //     const newRefreshToken = this.jwtService.sign(
+  //       {
+  //         sub: dbAuth._id ? dbAuth._id.toString() : String((dbAuth as any).id),
+  //         jid,
+  //       },
+  //       { expiresIn: refreshTtl },
+  //     );
+
+  //     // Optional: persist rotated refresh token or update dbAuth.jids if rotating jid.
+  //     // (I left persistence of refresh tokens out so you can implement it as you prefer.)
+
+  //     const user = {
+  //       id: dbAuth._id ? dbAuth._id.toString() : (dbAuth as any).id,
+  //       email: dbAuth.email,
+  //     };
+
+  //     // expiresIn in seconds — convert if your config provides a string TTL you want to expose
+  //     const expiresIn =
+  //       typeof accessExpiresIn === "number" ? accessExpiresIn : 60 * 60;
+
+  //     return {
+  //       accessToken: newAccessToken,
+  //       refreshToken: newRefreshToken,
+  //       user,
+  //       jid,
+  //       expiresIn,
+  //     };
+  //   } catch (err) {
+  //     // normalize errors into UnauthorizedException
+  //     throw new UnauthorizedException("Invalid or expired refresh token");
+  //   }
+  // }

@@ -1,22 +1,27 @@
 // src/modules/themes/themes.service.ts
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Theme } from './entities/theme.entity';
-import { User } from '../users/entities/user.entity';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  NotFoundException,
+} from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import { Theme } from "./entities/theme.entity";
+import { User } from "../users/entities/user.entity";
 
 /**
  * Server-side canonical theme list.
  * Keep this in sync with the frontend THEMES constant.
  */
 export const THEMES = [
-  { id: 'teal', label: 'Teal', img: '/themeChange.webp', color: '#2f6f66' },
-  { id: 'light', label: 'Light', img: '/themeChange.webp', color: '#c96a2b' }, // default
-  { id: 'dark', label: 'Dark', img: '/themeChange.webp', color: '#000000' },
+  { id: "teal", label: "Teal", img: "/themeChange.webp", color: "#2f6f66" },
+  { id: "light", label: "Light", img: "/themeChange.webp", color: "#c96a2b" }, // default
+  { id: "dark", label: "Dark", img: "/themeChange.webp", color: "#000000" },
 ];
 
-export const DEFAULT_THEME_ID = 'light';
-export const DEFAULT_THEME_COLOR = '#c96a2b';
+export const DEFAULT_THEME_ID = "light";
+export const DEFAULT_THEME_COLOR = "#c96a2b";
 
 @Injectable()
 export class ThemeService {
@@ -40,9 +45,9 @@ export class ThemeService {
    * Returns an object shaped like the Theme entity (partial if not persisted).
    */
   async getByEmail(email: string) {
-    if (!email) throw new BadRequestException('Email required');
+    if (!email) throw new BadRequestException("Email required");
 
-    const theme = await this.themeRepo.findOne({ where: { email } as any });
+    const theme = await this.themeRepo.findOne({ where: { email } });
     if (theme) return theme;
 
     const defaultTheme = THEMES.find((t) => t.id === DEFAULT_THEME_ID)!;
@@ -60,12 +65,12 @@ export class ThemeService {
    * Updates user's colorHex as well if user exists.
    */
   async createDefaultForEmail(email: string) {
-    if (!email) throw new BadRequestException('Email required');
+    if (!email) throw new BadRequestException("Email required");
     const defaultTheme = THEMES.find((t) => t.id === DEFAULT_THEME_ID)!;
 
     try {
-        const existingUser = await this.userRepo.findOne({ where: { email } as any });
-      const existing = await this.themeRepo.findOne({ where: { email } as any });
+      const existingUser = await this.userRepo.findOne({ where: { email } });
+      const existing = await this.themeRepo.findOne({ where: { email } });
 
       if (existing && existingUser) {
         existing.themeId = defaultTheme.id;
@@ -74,7 +79,9 @@ export class ThemeService {
         existing.colorHex = defaultTheme.color;
         await this.themeRepo.save(existing);
         await this.userRepo.save(existingUser);
-        this.logger.log(`Rewrote existing theme for ${email} -> ${defaultTheme.id}`);
+        this.logger.log(
+          `Rewrote existing theme for ${email} -> ${defaultTheme.id}`,
+        );
       } else {
         const created = this.themeRepo.create({
           email,
@@ -82,15 +89,17 @@ export class ThemeService {
           label: defaultTheme.label,
           img: defaultTheme.img,
           colorHex: defaultTheme.color,
-        } as any);
+        } as Theme);
         await this.themeRepo.save(created);
-        this.logger.log(`Created default theme for ${email} -> ${defaultTheme.id}`);
+        this.logger.log(
+          `Created default theme for ${email} -> ${defaultTheme.id}`,
+        );
       }
 
       // Keep user.colorHex in sync
-      const user = await this.userRepo.findOne({ where: { email } as any });
+      const user = await this.userRepo.findOne({ where: { email } });
       if (user) {
-        (user as any).colorHex = defaultTheme.color;
+        user.colorHex = defaultTheme.color;
         await this.userRepo.save(user);
       } else {
         this.logger.warn(`createDefaultForEmail: user not found for ${email}`);
@@ -98,7 +107,7 @@ export class ThemeService {
 
       return { ok: true };
     } catch (err) {
-      this.logger.error(`createDefaultForEmail failed for ${email}`, err as any);
+      this.logger.error(`createDefaultForEmail failed for ${email}`, err);
       throw err;
     }
   }
@@ -112,27 +121,31 @@ export class ThemeService {
     email: string,
     payload: { themeId?: string; colorHex?: string },
   ) {
-    if (!email) throw new BadRequestException('Email required');
+    if (!email) throw new BadRequestException("Email required");
     if (!payload?.themeId && !payload?.colorHex)
-      throw new BadRequestException('Either themeId or colorHex required');
+      throw new BadRequestException("Either themeId or colorHex required");
 
     // Determine resulting theme values
-    const chosen = payload.themeId ? THEMES.find((t) => t.id === payload.themeId) ?? null : null;
-    const resultingColor = payload.colorHex ?? chosen?.color ?? DEFAULT_THEME_COLOR;
-    const resultingLabel = chosen?.label ?? 'Custom';
+    const chosen = payload.themeId
+      ? (THEMES.find((t) => t.id === payload.themeId) ?? null)
+      : null;
+    const resultingColor =
+      payload.colorHex ?? chosen?.color ?? DEFAULT_THEME_COLOR;
+    const resultingLabel = chosen?.label ?? "Custom";
     const resultingImg = chosen?.img ?? null;
-    const resultingThemeId = chosen?.id ?? (payload.colorHex ? 'custom' : DEFAULT_THEME_ID);
+    const resultingThemeId =
+      chosen?.id ?? (payload.colorHex ? "custom" : DEFAULT_THEME_ID);
 
     try {
-      const existing = await this.themeRepo.findOne({ where: { email } as any });
-      const existingUser = await this.userRepo.findOne({ where: { email } as any });
+      const existing = await this.themeRepo.findOne({ where: { email } });
+      const existingUser = await this.userRepo.findOne({ where: { email } });
 
       if (existing && existingUser) {
         existing.themeId = resultingThemeId;
         existing.label = resultingLabel;
         existing.img = resultingImg;
         existing.colorHex = resultingColor;
-        existingUser.colorHex=resultingColor;
+        existingUser.colorHex = resultingColor;
         await this.themeRepo.save(existing);
         await this.userRepo.save(existingUser);
         this.logger.log(`Updated theme for ${email} -> ${resultingThemeId}`);
@@ -143,15 +156,15 @@ export class ThemeService {
           label: resultingLabel,
           img: resultingImg,
           colorHex: resultingColor,
-        } as any);
+        } as Theme);
         await this.themeRepo.save(created);
         this.logger.log(`Created theme for ${email} -> ${resultingThemeId}`);
       }
 
       // keep user.colorHex in sync
-      const user = await this.userRepo.findOne({ where: { email } as any });
+      const user = await this.userRepo.findOne({ where: { email } });
       if (user) {
-        (user as any).colorHex = resultingColor;
+        user.colorHex = resultingColor;
         await this.userRepo.save(user);
       } else {
         this.logger.warn(`updateByEmail: user not found for ${email}`);
@@ -159,30 +172,35 @@ export class ThemeService {
 
       return {
         ok: true,
-        theme: { themeId: resultingThemeId, label: resultingLabel, img: resultingImg, colorHex: resultingColor },
+        theme: {
+          themeId: resultingThemeId,
+          label: resultingLabel,
+          img: resultingImg,
+          colorHex: resultingColor,
+        },
       };
     } catch (err) {
-      this.logger.error(`updateByEmail failed for ${email}`, err as any);
+      this.logger.error(`updateByEmail failed for ${email}`, err);
       throw err;
     }
   }
 
   /** Helper: find themes by email (returns array - usually single element) */
   async findByEmail(email: string) {
-    if (!email) throw new BadRequestException('Email required');
-    return this.themeRepo.find({ where: { email } as any });
+    if (!email) throw new BadRequestException("Email required");
+    return this.themeRepo.find({ where: { email } });
   }
 
   /** Delete themes by email (used during account deletion) */
   async deleteByEmail(email: string) {
-    if (!email) throw new BadRequestException('Email required');
+    if (!email) throw new BadRequestException("Email required");
     try {
-      const res = await this.themeRepo.delete({ email } as any);
-      const affected = (res as any)?.affected ?? undefined;
+      const res = await this.themeRepo.delete({ email });
+      const affected = res?.affected ?? undefined;
       this.logger.log(`Deleted theme rows for ${email} (affected=${affected})`);
       return { ok: true, deletedCount: affected };
     } catch (err) {
-      this.logger.error(`deleteByEmail failed for ${email}`, err as any);
+      this.logger.error(`deleteByEmail failed for ${email}`, err);
       throw err;
     }
   }

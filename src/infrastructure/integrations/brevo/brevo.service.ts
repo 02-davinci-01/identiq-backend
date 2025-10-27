@@ -72,7 +72,7 @@ export class BrevoService {
     return { "api-key": this.apiKey! };
   }
 
-  private formatAxiosError(err: any) {
+  private formatAxiosError(err) {
     if (err?.response?.data) return err.response.data;
     if (err?.message) return { message: err.message };
     return { message: String(err) };
@@ -103,7 +103,7 @@ export class BrevoService {
       });
 
       // API shape: { templates: [ ... ] } OR sometimes array directly
-      const templates: any[] = res.data?.templates ?? res.data ?? [];
+      const templates = res.data?.templates ?? res.data ?? [];
       if (!Array.isArray(templates)) {
         this.logger.warn("Unexpected /smtp/templates response shape", res.data);
         throw new Error("Unexpected templates response");
@@ -138,7 +138,7 @@ export class BrevoService {
         `Resolved template reference '${refStr}' -> numeric id=${match.id}`,
       );
       return Number(match.id);
-    } catch (err: any) {
+    } catch (err) {
       const formatted = this.formatAxiosError(err);
       this.logger.error("Error resolving Brevo template id", formatted);
       throw new Error(
@@ -151,7 +151,7 @@ export class BrevoService {
    * Centralized method to either POST to Brevo or log payload when debugMode is on.
    * Returns the actual Brevo response (data) or a mock debug response.
    */
-  private async postEmail(payload: any) {
+  private async postEmail(payload) {
     if (this.debugMode) {
       // Use logger + console so it is visible in different runtimes; avoid printing secrets.
       this.logger.warn(
@@ -162,7 +162,7 @@ export class BrevoService {
       // Redact obvious fields if present
       if (safePreview?.sender?.email) safePreview.sender.email = "[REDACTED]";
       if (safePreview?.to)
-        safePreview.to = safePreview.to.map((t: any) => ({ email: t.email }));
+        safePreview.to = safePreview.to.map((t) => ({ email: t.email }));
       // console.log so developer sees structure during local dev
       /* eslint-disable no-console */
       console.log("Brevo debug payload:", safePreview);
@@ -175,7 +175,7 @@ export class BrevoService {
         headers: this.defaultHeaders(),
       });
       return res.data;
-    } catch (err: any) {
+    } catch (err) {
       const formatted = this.formatAxiosError(err);
       // throw the formatted message as Error for callers to handle
       this.logger.error("Brevo send failed", formatted);
@@ -317,7 +317,7 @@ export class BrevoService {
     let resolvedTemplateId: number | undefined;
     try {
       resolvedTemplateId = await this.resolveTemplateId(requestedRef);
-    } catch (err: any) {
+    } catch (err) {
       // If resolving fails, log and proceed to fallback behavior (htmlContent branch)
       this.logger.warn(
         `Failed to resolve forgot-password template ref '${String(requestedRef)}' — falling back to htmlContent if provided.`,
