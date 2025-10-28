@@ -2,22 +2,13 @@
 import { IsOptional, IsString, Matches, Length } from "class-validator";
 
 export class CreateCustomThemeDto {
-  /**
-   * themeId allows us to know which naming/source was used.
-   * Example: "ntcjs" or "color-namer:ntc"
-   */
-  @IsOptional()
   @IsString()
   @Length(1, 64)
-  themeId?: string = "ntcjs";
+  themeId: string;
 
-  /**
-   * Optional label. If absent, server will compute a canonical name (from ntcjs).
-   */
-  @IsOptional()
   @IsString()
   @Length(1, 128)
-  label?: string;
+  label: string;
 
   /**
    * hex - accept either `#RRGGBB` or `RRGGBB` (case-insensitive)

@@ -1,4 +1,3 @@
-// src/modules/themes/themes.controller.ts
 import {
   Controller,
   Get,
@@ -6,104 +5,102 @@ import {
   Post,
   Delete,
   Body,
+  Query,
   Param,
-  BadRequestException,
   UseGuards,
   Logger,
+  BadRequestException,
 } from "@nestjs/common";
 import { ThemeService } from "./themes.service";
-import { CurrentUser } from "../common/decorator/current-user-decorator";
-import { UpdateThemeDto } from "./dto/update-theme.dto";
-import { CreateCustomThemeDto } from "./dto/create-custom-theme.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth-guard";
+import { CurrentUser } from "../common/decorator/current-user-decorator";
+import { CreateCustomThemeDto } from "./dto/create-custom-theme.dto";
+import { UpdateThemeDto } from "./dto/update-theme.dto";
 
-@Controller("themes")
 @UseGuards(JwtAuthGuard)
+@Controller("themes")
 export class ThemesController {
   private readonly logger = new Logger(ThemesController.name);
 
-  constructor(private readonly themesService: ThemeService) {}
+  constructor(private readonly themeService: ThemeService) {}
 
   @Get("me")
-  async getMyTheme(@CurrentUser() jwt) {
-    try {
-      const email = jwt?.email;
-      if (!email) throw new BadRequestException("No email in token");
-      const theme = await this.themesService.getByEmail(email);
-      return theme;
-    } catch (err) {
-      this.logger.error("GET /themes/me failed", err);
-      throw err;
+  async getMyTheme(@CurrentUser() user: any) {
+    const email = user?.email;
+    if (!email) throw new BadRequestException("No email in token");
+    let row = await this.themeService.getByEmail(email);
+    if (!row) {
+      row = await this.themeService.createDefaultForEmail(email);
     }
+    return { ok: true, theme: row };
   }
 
-  /**
-   * Patch selected theme.
-   * Accepts { themeId?: string, colorHex?: string }.
-   * If themeId corresponds to a known static theme, server will persist canonical hex for that theme.
-   */
   @Patch()
-  async updateMyTheme(@CurrentUser() jwt, @Body() dto: UpdateThemeDto) {
-    try {
-      const email = jwt?.email;
-      if (!email) throw new BadRequestException("No email in token");
-      const updated = await this.themesService.updateByEmail(email, {
-        themeId: dto.themeId,
-        colorHex: dto.colorHex,
-      });
-      return { ok: true, theme: updated };
-    } catch (err) {
-      this.logger.error("PATCH /themes failed", err);
-      throw err;
+  async patchMyTheme(@CurrentUser() user: any, @Body() dto: UpdateThemeDto) {
+    const email = user?.email;
+    if (!email) throw new BadRequestException("No email in token");
+    if (!dto.colorHex && !dto.themeId) {
+      throw new BadRequestException("Either colorHex or themeId required");
     }
+    const saved = await this.themeService.updateByEmail(email, {
+      themeId: dto.themeId,
+      label: dto.label,
+      colorHex: dto.colorHex,
+    });
+    return { ok: true, theme: saved };
   }
 
-  /**
-   * POST /themes/custom
-   * Body: { hex: string, label?: string, themeId?: string }
-   */
   @Post("custom")
-  async createCustomTheme(
-    @CurrentUser() jwt,
+  async createCustom(
+    @CurrentUser() user: any,
     @Body() dto: CreateCustomThemeDto,
   ) {
-    try {
-      const email = jwt?.email;
-      if (!email) throw new BadRequestException("No email in token");
-      const result = await this.themesService.createCustomTheme(email, dto);
-      return { ok: true, item: result.item, themeRow: result.themeRow };
-    } catch (err) {
-      this.logger.error("POST /themes/custom failed", err);
-      throw err;
-    }
+    const email = user?.email;
+    if (!email) throw new BadRequestException("No email in token");
+    const result = await this.themeService.createCustomTheme(email, dto);
+    return { ok: true, item: result.item };
   }
 
-  /**
-   * DELETE /themes/custom/:hex
-   */
   @Delete("custom/:hex")
-  async deleteCustomTheme(@CurrentUser() jwt, @Param("hex") hex: string) {
-    try {
-      const email = jwt?.email;
-      if (!email) throw new BadRequestException("No email in token");
-      const removed = await this.themesService.removeCustomTheme(email, hex);
-      return { ok: true, removed };
-    } catch (err) {
-      this.logger.error("DELETE /themes/custom/:hex failed", err);
-      throw err;
-    }
+  async deleteCustom(@CurrentUser() user: any, @Param("hex") hex: string) {
+    const email = user?.email;
+    if (!email) throw new BadRequestException("No email in token");
+    const normalized = hex.startsWith("#") ? hex : `#${hex}`;
+    const result = await this.themeService.removeCustomTheme(email, normalized);
+    return { ok: true, removed: result.removed };
   }
 
   @Get("custom")
-  async listCustomThemes(@CurrentUser() jwt) {
+  async listCustom(@CurrentUser() user: any) {
+    const email = user?.email;
+    if (!email) throw new BadRequestException("No email in token");
+    const items = await this.themeService.getCustomThemes(email);
+    return { ok: true, items };
+  }
+
+  @Get("by-email")
+  async byEmail(@Query("email") email?: string) {
+    if (!email) throw new BadRequestException("email query required");
+    const row = await this.themeService.getByEmail(email);
+    return { ok: true, theme: row };
+  }
+
+  @Post("batch")
+  async batch(@Body() body: { emails?: string[] }) {
+    const emails = Array.isArray(body?.emails) ? body.emails.map(String) : [];
+    if (emails.length === 0) return { ok: true, items: [] };
+    const items = await this.themeService.fetchBatchByEmails(emails);
+    return { ok: true, items };
+  }
+
+  @Get("distribution-counts")
+  async distributionCounts() {
     try {
-      const email = jwt?.email;
-      if (!email) throw new BadRequestException("No email in token");
-      const items = await this.themesService.getCustomThemes(email);
-      return { ok: true, items };
+      const counts = await this.themeService.getDistributionCounts();
+      return { ok: true, counts };
     } catch (err) {
-      this.logger.error("GET /themes/custom failed", err);
-      throw err;
+      this.logger.warn("distribution-counts failed: " + (err?.message ?? err));
+      return { ok: false, counts: {} };
     }
   }
 }
