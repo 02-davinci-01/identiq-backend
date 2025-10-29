@@ -558,7 +558,7 @@ export class AuthService {
         // transaction-scoped repos
         const authRepoTx = manager.getRepository(this.authRepo.target);
         const userRepoTx = manager.getRepository(this.userRepo.target);
-        const themeRepoTx = manager.getRepository(this.themeRepo.target);
+        // const themeRepoTx = manager.getRepository(this.themeRepo.target);
 
         // reload auth under transaction to avoid TOCTOU
         const auth = await authRepoTx.findOne({
@@ -588,7 +588,7 @@ export class AuthService {
             where: { email: String(oldEmail).trim().toLowerCase() },
           });
 
-          themeDoc = await themeRepoTx.findOne({
+          themeDoc = await this.themeRepo.findOne({
             where: { email: String(oldEmail).trim().toLowerCase() },
           });
         }
@@ -604,9 +604,10 @@ export class AuthService {
           );
         }
 
+        console.log(themeDoc);
         if (themeDoc) {
           themeDoc.email = normalizedEmail;
-          await themeRepoTx.save(themeDoc);
+          await this.themeRepo.save(themeDoc);
         } else {
           this.logger.warn(
             `confirmEmailChange: theme not found for oldEmail=${oldEmail}, authId=${(auth as Auth)._id}. Skipping theme update.`,

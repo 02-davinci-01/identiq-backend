@@ -96,11 +96,27 @@ export class ThemesController {
   @Get("distribution-counts")
   async distributionCounts() {
     try {
-      const counts = await this.themeService.getDistributionCounts();
-      return { ok: true, counts };
+      // service returns: { ok: true, items: Array<{ label, count, colorHex }> }
+      const svcRes = await this.themeService.getDistributionCounts();
+
+      // defensive: ensure we have items array
+      const items =
+        svcRes && Array.isArray((svcRes as any).items)
+          ? (svcRes as any).items
+          : [];
+
+      // build legacy counts map: label -> count
+      const counts: Record<string, number> = {};
+      for (const it of items) {
+        const lbl = String(it.label ?? "Unknown");
+        counts[lbl] = (counts[lbl] ?? 0) + Number(it.count ?? 0);
+      }
+
+      // Return both canonical and legacy shapes for maximum compatibility
+      return { ok: true, items, counts };
     } catch (err) {
       this.logger.warn("distribution-counts failed: " + (err?.message ?? err));
-      return { ok: false, counts: {} };
+      return { ok: false, items: [], counts: {} };
     }
   }
 }

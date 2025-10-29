@@ -94,6 +94,7 @@ export class ThemeService {
     email: string,
     payload: { themeId: string; label: string; colorHex: string },
   ): Promise<Theme> {
+    console.log("i was hit");
     if (!email) throw new Error("email required");
     const lower = email.toLowerCase();
 
@@ -270,35 +271,130 @@ export class ThemeService {
   }
 
   // Distribution counts (label -> count)
-  async getDistributionCounts(): Promise<Record<string, number>> {
-    try {
-      const qb = this.themeRepo
-        .createQueryBuilder("t")
-        .select("COALESCE(t.label, t.themeId, t.colorHex)", "label")
-        .addSelect("COUNT(*)", "count")
-        .groupBy("COALESCE(t.label, t.themeId, t.colorHex)");
+  // returns: { ok: true, items: [{ label: string, hex: string, count: number, themeId?: string }] }
+  // returns: { ok: true, items: [{ label: string, count: number, colorHex: string }] }
+  async getDistributionCounts(): Promise<{
+    ok: true;
+    items: Array<{ label: string; count: number; colorHex: string }>;
+  }> {
+    // normalizes 6-digit hex-like strings to "#RRGGBB", otherwise returns ""
+    const normalizeHex = (raw?: any): string => {
+      if (!raw && raw !== "") return "";
+      const s = String(raw ?? "").trim();
+      const m = s.match(/^#?([0-9A-F]{6})$/i);
+      if (!m) return "";
+      return `#${m[1].toUpperCase()}`;
+    };
 
-      const raw = await qb.getRawMany();
-      const out: Record<string, number> = {};
-      for (const r of raw) {
-        const label = String(r.label ?? "").trim() || "Unknown";
-        out[label] = (out[label] ?? 0) + Number(r.count ?? 0);
+    try {
+      const repoAny = this.themeRepo as any;
+
+      // Try Mongo aggregation first (TypeORM's MongoRepository exposes aggregate)
+      if (typeof repoAny.aggregate === "function") {
+        const pipeline = [
+          {
+            $project: {
+              // label prefers label, then themeId, then colorHex
+              label: {
+                $ifNull: ["$label", { $ifNull: ["$themeId", "$colorHex"] }],
+              },
+              // hex candidate is whatever is stored in colorHex (could be empty)
+              hex: { $ifNull: ["$colorHex", ""] },
+            },
+          },
+          {
+            $group: {
+              _id: "$label",
+              count: { $sum: 1 },
+              hexs: { $push: "$hex" },
+            },
+          },
+        ];
+
+        const agg = repoAny.aggregate(pipeline);
+        const raw =
+          typeof agg.toArray === "function" ? await agg.toArray() : await agg;
+
+        const items = (raw || []).map((r: any) => {
+          const label = (r?._id ?? "Unknown").toString().trim() || "Unknown";
+          const hexs: string[] = Array.isArray(r?.hexs)
+            ? r.hexs.map((h: any) => String(h ?? "").trim())
+            : [];
+          // pick first non-empty hex in hexs (if any)
+          const firstNonEmpty =
+            hexs.find((h) => !!h && String(h).trim().length > 0) ?? "";
+          const colorHex = normalizeHex(firstNonEmpty) || "";
+          return {
+            label,
+            count: Number(r?.count ?? 0),
+            colorHex,
+          };
+        });
+
+        return { ok: true, items };
       }
-      return out;
     } catch (err) {
-      this.logger.warn(
-        "DB aggregation failed, falling back to in-memory aggregation",
+      this.logger?.warn?.(
+        "Mongo aggregation attempt failed; falling back to in-memory aggregation",
+        err,
       );
     }
 
-    const all = await this.themeRepo.find();
-    const map = new Map<string, number>();
-    for (const r of all) {
-      const key = (r.label ?? r.themeId ?? r.colorHex ?? "Unknown").toString();
-      map.set(key, (map.get(key) ?? 0) + 1);
+    // --- fallback: in-memory aggregation using find() ---
+    try {
+      const all = await this.themeRepo.find();
+      // map: label -> { count, hexFrequencyMap }
+      const map = new Map<
+        string,
+        { count: number; hexFreq: Map<string, number> }
+      >();
+
+      for (const r of all) {
+        const label =
+          (r?.label ?? r?.themeId ?? r?.colorHex ?? "Unknown")
+            .toString()
+            .trim() || "Unknown";
+        const rawHex = (r?.colorHex ?? "")?.toString().trim() ?? "";
+        const normalized = normalizeHex(rawHex); // "" if not hex
+        const existing = map.get(label);
+        if (existing) {
+          existing.count += 1;
+          const prev = existing.hexFreq.get(normalized) ?? 0;
+          existing.hexFreq.set(normalized, prev + 1);
+        } else {
+          const freq = new Map<string, number>();
+          freq.set(normalized, 1);
+          map.set(label, { count: 1, hexFreq: freq });
+        }
+      }
+
+      // pick representative hex per label: most frequent non-empty hex; if none, ""
+      const items: Array<{ label: string; count: number; colorHex: string }> =
+        [];
+      for (const [label, info] of map.entries()) {
+        let chosenHex = "";
+        // find the hex with max frequency (prefer non-empty)
+        let bestCount = -1;
+        for (const [hex, freq] of info.hexFreq.entries()) {
+          // skip empty hexes unless nothing else
+          if (hex && hex.length > 0) {
+            if (freq > bestCount) {
+              bestCount = freq;
+              chosenHex = hex;
+            }
+          }
+        }
+        // if no non-empty chosen, check if empty hex present and choose "" (already default)
+        items.push({ label, count: info.count, colorHex: chosenHex });
+      }
+
+      return { ok: true, items };
+    } catch (err) {
+      this.logger?.warn?.(
+        "In-memory aggregation failed in getDistributionCounts",
+        err,
+      );
+      return { ok: true, items: [] };
     }
-    const out: Record<string, number> = {};
-    for (const [k, v] of map.entries()) out[k] = v;
-    return out;
   }
 }
