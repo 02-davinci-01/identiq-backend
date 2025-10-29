@@ -554,13 +554,13 @@ export class AuthService {
     if (!matches) throw new BadRequestException("Invalid token");
 
     try {
-      const result = await this.dataSource.transaction(async (manager) => {
-        // transaction-scoped repos
+      // Run transaction and return the saved auth object at the end
+      const savedAuth = await this.dataSource.transaction(async (manager) => {
         const authRepoTx = manager.getRepository(this.authRepo.target);
-        const userRepoTx = manager.getRepository(this.userRepo.target);
+        // const userRepoTx = manager.getRepository(this.userRepo.target);
         // const themeRepoTx = manager.getRepository(this.themeRepo.target);
 
-        // reload auth under transaction to avoid TOCTOU
+        // reload auth inside txn (TOCTOU prevention)
         const auth = await authRepoTx.findOne({
           where: { _id: authDoc._id },
         });
@@ -579,12 +579,11 @@ export class AuthService {
         );
         if (!okInside) throw new BadRequestException("Invalid token");
 
-        // Find user & theme by the previous/current email (oldEmail). This mirrors your original logic.
-        // Use transaction-local repos so updates are part of the same transaction.
-        let userDoc, themeDoc;
-
+        // find user and theme by old email
+        let userDoc;
+        let themeDoc;
         if (oldEmail) {
-          userDoc = await userRepoTx.findOne({
+          userDoc = await this.userRepo.findOne({
             where: { email: String(oldEmail).trim().toLowerCase() },
           });
 
@@ -593,40 +592,51 @@ export class AuthService {
           });
         }
 
-        // Update user and theme only if found (mirrors previous assumption but safe inside txn)
+        // update user and theme if present
         if (userDoc) {
           userDoc.email = normalizedEmail;
-          await userRepoTx.save(userDoc);
+          await this.userRepo.save(userDoc);
         } else {
-          // preserve current behavior (don't throw) but log so you can inspect missing rows
           this.logger.warn(
-            `confirmEmailChange: user not found for oldEmail=${oldEmail}, authId=${(auth as Auth)._id}. Skipping user update.`,
+            `confirmEmailChange: user not found for oldEmail=${oldEmail}, authId=${(auth as any)._id}. Skipping user update.`,
           );
         }
 
-        console.log(themeDoc);
         if (themeDoc) {
           themeDoc.email = normalizedEmail;
           await this.themeRepo.save(themeDoc);
         } else {
           this.logger.warn(
-            `confirmEmailChange: theme not found for oldEmail=${oldEmail}, authId=${(auth as Auth)._id}. Skipping theme update.`,
+            `confirmEmailChange: theme not found for oldEmail=${oldEmail}, authId=${(auth as any)._id}. Skipping theme update.`,
           );
         }
 
-        // Update auth record: mark verified, set canonical email, clear updEmail & token fields
+        // mark email verified and clear token/updEmail fields
         auth.emailVerified = true;
         auth.email = normalizedEmail;
         auth.updEmail = null;
         auth.verifyEmailTokenHash = null;
         auth.verifyEmailExpiry = null;
 
-        await authRepoTx.save(auth);
-
-        return { success: true };
+        const saved = await authRepoTx.save(auth);
+        // return the saved auth record from the transaction
+        return saved;
       });
 
-      return result;
+      // Now generate a fresh session JWT for the newly confirmed auth record
+      // authService.login expects a Partial<Auth>-like object (the login implementation you showed)
+      const { accessToken, refreshToken, jid, expiresIn, user } =
+        await this.login(savedAuth as any);
+
+      // Return tokens and user so controller returns them to the client
+      return {
+        accessToken,
+        refreshToken,
+        jid,
+        expiresIn,
+        user,
+        message: "Email confirmed and signed in",
+      };
     } catch (err) {
       this.logger.error("confirmEmailChange transaction failed", err);
       throw new InternalServerErrorException("Failed to confirm email change");
