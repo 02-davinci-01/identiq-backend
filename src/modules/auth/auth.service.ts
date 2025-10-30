@@ -50,10 +50,9 @@ export class AuthService {
     return randomBytes(len).toString("hex");
   }
 
-  // ------------------------
-  // === YOUR ORIGINAL REGISTER FLOW (preserved exactly) ===
-  // (sourced from your uploaded file)
-  // ------------------------
+  ////////////////////
+  //REGISTER SERVICE/////////
+  //////////////////
   async register(dto: { name: string; email: string }) {
     const { name, email } = dto;
     if (!email) throw new BadRequestException("Email is required");
@@ -120,6 +119,10 @@ export class AuthService {
     return { message: "email sent successfully", status: true };
   }
 
+  ////////////////////
+  //COMPLETE REGISTER WITH EMAIL/////////
+  //////////////////
+
   async completeRegisterWithEmail(
     token: string,
     email: string,
@@ -168,18 +171,10 @@ export class AuthService {
 
     return { ok: true };
   }
-  // ------------------------
-  // End preserved register flow. See original file. :contentReference[oaicite:3]{index=3}
-  // ------------------------
 
-  // ------------------------
-  // Auth helpers used by strategies / controller
-  // ------------------------
-
-  /**
-   * Validate credentials for LocalStrategy.
-   * Returns Auth entity if valid, otherwise null.
-   */
+  ////////////////////
+  //DB LOOKUP LOGIC/////////
+  //////////////////
   async validateUser(email: string, password: string): Promise<Auth | null> {
     if (!email || !password) return null;
 
@@ -190,16 +185,11 @@ export class AuthService {
     return matches ? auth : null;
   }
 
-  /**
-   * Login: create jid, persist to auth.jids, sign JWT
-   */
-  // inside AuthService
-
-  // helper type: Auth may have a Mongo ObjectId (_id) or an SQL id (id: string)
-
+  ////////////////////
+  //LOGIN LOGIC AND JWT GENERATION/////////
+  //////////////////
   async login(authRow: Partial<Auth> | null): Promise<{
     accessToken: string;
-    refreshToken: string;
     jid: string;
     expiresIn: string | number;
     user: { id: string; email?: string; name?: string };
@@ -227,9 +217,7 @@ export class AuthService {
     );
     const MAX_SESSIONS = Number(maxSessionsRaw ?? 10);
     if (!Number.isFinite(MAX_SESSIONS) || MAX_SESSIONS <= 0) {
-      // fallback to sane default
-      // eslint-disable-next-line no-param-reassign
-      // (no-op, MAX_SESSIONS already defaulted)
+      throw new InternalServerErrorException("Invalid MAX_SESSIONS config");
     }
     if (dbAuth.jids.length >= MAX_SESSIONS) dbAuth.jids.shift();
 
@@ -267,27 +255,16 @@ export class AuthService {
     });
 
     // refresh token TTL (string like '30d' or number seconds)
-    const rawRefreshTtl = this.config.get<string | number | undefined>(
-      "REFRESH_TOKEN_TTL",
-    );
-    const refreshTtl: string | number = rawRefreshTtl ?? "30d";
 
     const refreshPayload = {
       sub: userId,
       jid,
     };
 
-    const refreshToken = this.jwtService.sign(
-      refreshPayload as Record<string, unknown>,
-      {
-        expiresIn: refreshTtl as SignOptions["expiresIn"],
-      },
-    );
-
     // return typed shape
     return {
       accessToken,
-      refreshToken,
+
       jid,
       expiresIn,
       user: {
@@ -298,9 +275,9 @@ export class AuthService {
     };
   }
 
-  /**
-   * Logout: remove the jid
-   */
+  ////////////////////
+  //LOGOUT/////////
+  //////////////////
   async logout(authIdStr: string, jid: string) {
     if (!authIdStr || !jid)
       throw new BadRequestException("Missing authId or jid");
@@ -379,7 +356,9 @@ export class AuthService {
     return { ok: true };
   }
 
-  /** Delete account: remove auth, user and theme rows (transactional) */
+  ////////////////////
+  //DELETE ACCOUNT--TRANSACTION/////////
+  //////////////////
   async deleteAccountByEmailTransactional(email: string) {
     if (!email) throw new BadRequestException("Missing email");
 
@@ -401,25 +380,9 @@ export class AuthService {
     return this.deleteAccountByEmailTransactional(email);
   }
 
-  /**
-   * Initiate email change:
-   * - set pendingNewEmail, pendingEmailTokenHash, pendingEmailExpiry on Auth
-   * - send verification email to newEmail (use your existing brevo/email util)
-   */
-
-  /**
-   * Initiate email change:
-   * - sets pendingNewEmail, pendingEmailTokenHash, pendingEmailExpiry on Auth
-   * - sends verification email to newEmail using Brevo helper (same signature as register)
-   */
-  // inside AuthService
-
-  /**
-   * Initiates an email change.
-   * - Reuses verifyEmailTokenHash & verifyEmailExpiry fields (no new schema fields).
-   * - Raw token format: "<newEmail>::<randomHex>"
-   * - Sends verification email to newEmail via Brevo (same signature as register).
-   */
+  ////////////////////
+  //INITIATE EMAIL CHANGE/////////
+  //////////////////
   async initiateEmailChange(currentEmail: string, newEmail: string) {
     if (!currentEmail)
       throw new BadRequestException("Missing authenticated email");
@@ -493,34 +456,9 @@ export class AuthService {
     return { message: "verification email sent", status: true };
   }
 
-  /**
-   * Complete email change (transactional update across Auth, User, Theme)
-   * - token: raw token from query (string)
-   * - newEmail: the email being confirmed
-   * - password?: optional new password to set on auth
-   */
-  /**
-   * Complete email change (transactional update across Auth, User, Theme)
-   * - token: raw token from query
-   * - newEmail: the email being confirmed (body)
-   * - password?: optional new password to set on auth
-   *
-   * This uses DataSource.transaction (keeps TypeORM transaction pattern you already have).
-   */
-  // inside AuthService
-
-  /**
-   * Confirm email change.
-   * - rawToken: the token provided in the verification link (contains newEmail::random)
-   * - email: the newEmail (frontend passes it back)
-   *
-   * Process:
-   *  - find candidate auth documents with non-expired verifyEmailExpiry
-   *  - bcrypt.compare rawToken against each candidate.verifyEmailTokenHash
-   *  - when a match is found, extract embedded newEmail from token and validate it equals `email` param
-   *  - then in a transaction update auth.email, set emailVerified = true, clear verify fields,
-   *    and update user + theme collections to keep consistency.
-   */
+  ////////////////////
+  //CONFIRM EMAIL CHANGE/////////
+  //////////////////
   async confirmEmailChange(rawToken: string, email: string) {
     if (!rawToken || !email)
       throw new BadRequestException("Missing token or email");
@@ -625,13 +563,13 @@ export class AuthService {
 
       // Now generate a fresh session JWT for the newly confirmed auth record
       // authService.login expects a Partial<Auth>-like object (the login implementation you showed)
-      const { accessToken, refreshToken, jid, expiresIn, user } =
-        await this.login(savedAuth as any);
+      const { accessToken, jid, expiresIn, user } = await this.login(
+        savedAuth as any,
+      );
 
       // Return tokens and user so controller returns them to the client
       return {
         accessToken,
-        refreshToken,
         jid,
         expiresIn,
         user,
@@ -644,8 +582,10 @@ export class AuthService {
   }
 
   /////////////////////////////FORGOT PASSWORD/////////////////////////////////////////////////
-  // inside AuthService class
-  // inside AuthService class — replace existing initiatePasswordReset with this
+
+  ////////////////////
+  //PASSWORD RESET/////////
+  //////////////////
   async initiatePasswordReset(email: string) {
     if (!email) throw new BadRequestException("Email is required");
 
@@ -709,19 +649,12 @@ export class AuthService {
     return { message: "email sent successfully", status: true };
   }
 
-  /**
-   * Complete password reset (verify token + email then set new password)
-   * - email & rawToken are provided by query in the frontend link and passed into controller
-   * - we compare rawToken to the stored hash using bcrypt.compare
-   * - on success we hash new password (same HASH_ROUNDS) and persist to auth row (and user row if needed)
-   * - clear the resetPasswordTokenHash & resetPasswordExpiry fields
-   */
-  // inside AuthService class
   async completePasswordResetWithEmail(
     email: string,
     rawToken: string,
     newPassword: string,
   ) {
+    console.log("i was called");
     if (!email) throw new BadRequestException("Email is required");
     if (!rawToken) throw new BadRequestException("Token is required");
     if (!newPassword) throw new BadRequestException("Password is required");

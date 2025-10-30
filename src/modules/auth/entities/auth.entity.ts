@@ -10,7 +10,7 @@ import {
 @Entity("auth")
 export class Auth {
   @ObjectIdColumn()
-  _id: ObjectId; //would be valid after the mongodb i guess
+  _id: ObjectId;
 
   @Column({ unique: true })
   email: string;

@@ -18,6 +18,9 @@ export class ThemeService {
     private readonly userRepo: Repository<User>,
   ) {}
 
+  ////////////////////
+  //CONSISTENT HEX STORAGE/////////
+  //////////////////
   private normalizeHex(hex: string): string | null {
     if (!hex) return null;
     const v = hex.trim().toUpperCase();
@@ -26,42 +29,9 @@ export class ThemeService {
     return null;
   }
 
-  // Normalize hex to #RRGGBB (uppercase) or null
-
-  // Derive theme meta (themeId, label, colorHex) from a hex.
-  deriveThemeMeta(hexInput: string) {
-    const hex = this.normalizeHex(hexInput) ?? hexInput;
-    let themeId: string;
-    let label: string;
-
-    try {
-      // try to use ntcjs if installed
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-
-      if (ntc && typeof ntc.name === "function") {
-        const res = ntc.name(hex);
-
-        if (Array.isArray(res) && res.length > 0) {
-          label = String(res[0] ?? hex).replace(/_/g, " ");
-          themeId =
-            String(label).toLowerCase().replace(/\s+/g, "-") ||
-            hex.replace("#", "").toLowerCase();
-          return { themeId, label, colorHex: hex.toUpperCase() };
-        }
-      }
-    } catch (e) {
-      this.logger.debug(
-        "ntcjs not available or failed, using fallback deriveThemeMeta",
-      );
-    }
-
-    const hexOnly = hex.replace("#", "").toLowerCase();
-    label = `Hex${hexOnly.toUpperCase()}`;
-    themeId = hexOnly;
-    return { themeId, label, colorHex: hex.toUpperCase() };
-  }
-
-  // Get theme row for an email
+  ////////////////////
+  //GET THEME BY EMAIL/////////
+  //////////////////
   async getByEmail(email: string): Promise<Theme | null> {
     if (!email) return null;
     const lower = email.toLowerCase();
@@ -69,7 +39,9 @@ export class ThemeService {
     return row ?? null;
   }
 
-  // Create default (light) for an email if missing
+  ////////////////////
+  //DEFAULT THEME OBJECT GENERATION FOR NEW USER/////////
+  //////////////////
   async createDefaultForEmail(email: string): Promise<Theme> {
     if (!email) throw new Error("email required");
     const lower = email.toLowerCase();
@@ -85,11 +57,9 @@ export class ThemeService {
     return this.themeRepo.save(row as Theme);
   }
 
-  /**
-   * Update user's canonical theme.
-   * Accepts payload with colorHex (preferred) or themeId.
-   * Resolves themeId+label on backend when colorHex provided.
-   */
+  ////////////////////
+  //UPDATE THEME BY EMAIL/////////
+  //////////////////
   async updateByEmail(
     email: string,
     payload: { themeId: string; label: string; colorHex: string },
@@ -137,7 +107,9 @@ export class ThemeService {
     return saved;
   }
 
-  // Create custom theme (adds to user's customThemes list)
+  ////////////////////
+  //CREATE CUSTOM THEME/////////
+  //////////////////
   async createCustomTheme(email: string, dto: CreateCustomThemeDto) {
     if (!email) throw new BadRequestException("email required");
     if (!dto || !dto.hex)
@@ -160,15 +132,11 @@ export class ThemeService {
 
     row.customThemes = row.customThemes ?? [];
 
-    // --- STATIC THEME CHECK ---
-    // NOTE: keep this list in sync with your frontend static themes or move this to config.
-    // These are the frontend values used previously: teal, light, dark.
     const STATIC_HEXES = ["#2F6F66", "#C96A2B", "#000000"].map((h) =>
       h.toUpperCase(),
     );
 
     if (STATIC_HEXES.includes(normalized.toUpperCase())) {
-      // If you prefer to throw, change to throw new BadRequestException(...)
       return {
         ok: false,
         message:
@@ -191,7 +159,7 @@ export class ThemeService {
     }
 
     // --- Build new item using frontend-provided themeId + label ---
-    // If dto.themeId is missing, we default to label trimmed (frontend should normally provide themeId)
+
     const newThemeId = (dto.themeId ?? dto.label ?? "").toString().trim();
     const newLabel = (dto.label ?? dto.themeId ?? normalized).toString().trim();
 
@@ -222,7 +190,9 @@ export class ThemeService {
 
   // helper: normalizeHex - your existing implementation assumed present
 
-  // Remove custom theme
+  ////////////////////
+  //REMOVE CUSTOM THEME/////////
+  //////////////////
   async removeCustomTheme(email: string, hex: string) {
     if (!email) throw new Error("email required");
     const normalized = this.normalizeHex(hex);
@@ -244,7 +214,9 @@ export class ThemeService {
     return { removed: true };
   }
 
-  // List custom themes for a user
+  ////////////////////
+  //LISTING CUSTOM THEMES -- OPTIONAL FEATURE/////////
+  //////////////////
   async getCustomThemes(email: string) {
     if (!email) throw new Error("email required");
     const row = await this.themeRepo.findOne({
@@ -253,25 +225,9 @@ export class ThemeService {
     return row?.customThemes ?? [];
   }
 
-  // Batch fetch rows by emails -> returns items in input order
-  async fetchBatchByEmails(
-    emails: string[],
-  ): Promise<Array<{ email: string; theme: Theme | null }>> {
-    const uniq = Array.from(
-      new Set(
-        (emails || []).filter(Boolean).map((e) => String(e).toLowerCase()),
-      ),
-    );
-    if (uniq.length === 0) return [];
-    const rows = await this.themeRepo.find({ where: { email: In(uniq) } });
-    const map = new Map<string, Theme>();
-    rows.forEach((r) => map.set(String(r.email).toLowerCase(), r));
-    return uniq.map((em) => ({ email: em, theme: map.get(em) ?? null }));
-  }
-
-  // Distribution counts (label -> count)
-  // returns: { ok: true, items: [{ label: string, hex: string, count: number, themeId?: string }] }
-  // returns: { ok: true, items: [{ label: string, count: number, colorHex: string }] }
+  ////////////////////
+  //GET DISTRIBUTION COUNT/////////
+  //////////////////
   async getDistributionCounts(): Promise<{
     ok: true;
     items: Array<{ label: string; count: number; colorHex: string }>;

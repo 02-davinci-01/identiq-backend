@@ -25,7 +25,6 @@ import { JwtAuthGuard } from "./modules/common/guards/jwt-auth-guard";
     BrevoModule,
   ],
   controllers: [AppController],
-  providers: [AppService,{ provide: APP_GUARD, useClass: JwtAuthGuard }],
+  providers: [AppService, { provide: APP_GUARD, useClass: JwtAuthGuard }],
 })
 export class AppModule {}
-// { provide: APP_GUARD, useClass: JwtAuthGuard }

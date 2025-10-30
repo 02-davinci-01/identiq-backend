@@ -31,16 +31,13 @@ export class UsersService {
     return "found the data";
   }
 
-  /**
-   * Find a user by Mongo ObjectId (keeps your existing implementation).
-   * Returns null if id is falsy or not found.
-   */
+  ////////////////////
+  //FIND USER BY ID/////////
+  //////////////////
   async findById(id: string) {
     if (!id) return null;
-    // keep your ObjectId-based lookup if needed elsewhere
+
     try {
-      // If your User entity maps _id as ObjectId, adapt as needed.
-      // Current repo.findOne usage from your uploaded file preserved.
       return this.userRepo.findOne({ where: { _id: new ObjectId(id) } });
     } catch (err) {
       this.logger.warn(`findById failed for id=${id}: ${err?.message ?? err}`);
@@ -48,15 +45,12 @@ export class UsersService {
     }
   }
 
-  /**
-   * Find a user by email. Email is indexed/unique in most schemas so this is fast.
-   * Returns the user entity or null.
-   */
+  ////////////////////
+  //FIND BY EMAIL/////////
+  //////////////////
   async findByEmail(email: string) {
     if (!email) return null;
     try {
-      // Use a minimal projection if you want to avoid sending sensitive fields.
-      // TypeORM's select/projection usage differs by driver; here we fetch the entity and map.
       return this.userRepo.findOne({ where: { email } });
     } catch (err) {
       this.logger.error(`Error querying user by email=${email}`, err);
@@ -64,6 +58,9 @@ export class UsersService {
     }
   }
 
+  ////////////////////
+  //COUNT USER SERVICE/////////
+  //////////////////
   async countUsers(): Promise<number> {
     try {
       // TypeORM: count(); Mongoose would be this.userModel.countDocuments()
@@ -74,8 +71,9 @@ export class UsersService {
     }
   }
 
-  // async getAllUsers(limit?: number, offset?: number) { ... }
-
+  ////////////////////
+  //GET ALL USER SERVICE/////////
+  //////////////////
   async getAllUsers(limit?: number, offset?: number) {
     try {
       // coerce and cap values
@@ -104,38 +102,14 @@ export class UsersService {
     }
   }
 
-  /**
-   * Delete user by email across Auth, User and Theme repos.
-   * For SQL DBs we run a transaction to ensure atomicity.
-   * For MongoDB we perform sequential deletes (replica-set session transaction not assumed).
-   */
+  ////////////////////
+  //DELETE BY EMAIL/////////
+  //////////////////
   async deleteByEmail(email: string) {
     if (!email) throw new BadRequestException("Email required");
 
     const driver = this.dataSource.options.type;
 
-    // SQL-like databases: use transaction
-    if (driver !== "mongodb") {
-      return await this.dataSource.transaction(async (manager) => {
-        // Use manager to perform deletes across repos atomically
-        const userRepoTx = manager.getRepository(User);
-        const authRepoTx = manager.getRepository(Auth);
-        const themeRepoTx = manager.getRepository(Theme);
-
-        // delete auth sessions/row(s) first (if you have a dedicated auth row)
-        await authRepoTx.delete({ email });
-
-        // delete theme row(s)
-        await themeRepoTx.delete({ email });
-
-        // delete user row
-        const res = await userRepoTx.delete({ email });
-
-        return { ok: true, deletedCount: res?.affected ?? 0 };
-      });
-    }
-
-    // Mongo: sequential deletes (no transaction assumed)
     try {
       await this.authRepo.delete({ email });
       await this.themeRepo.delete({ email });

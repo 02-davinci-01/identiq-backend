@@ -29,12 +29,9 @@ export class UsersController {
     return "we have found the db";
   }
 
-  /**
-   * GET /users/me
-   * - Accepts the value injected by @CurrentUser() (your Jwt guard/strategy should attach the JWT payload)
-   * - Prefers searching the DB by email for canonical user data
-   * - Returns { name, email } (wrapped by UserResponseDto)
-   */
+  ////////////////////
+  //GET DATA OF LOGGED IN USER/////////
+  //////////////////
   @Get("me")
   async getProfile(@CurrentUser() jwtPayloadOrUser) {
     try {
@@ -90,6 +87,10 @@ export class UsersController {
     }
   }
 
+  ////////////////////
+  //TOTAL COUNT OF USER/////////
+  //////////////////
+
   @Public()
   @Get("count")
   async getCount() {
@@ -97,7 +98,9 @@ export class UsersController {
     return { count: total };
   }
 
-  // Example using NestJS controller method
+  ////////////////////
+  //ALL USERS FOR TABLE/////////
+  //////////////////
   @Get()
   async getAll(
     @Query("limit") limit?: string,
@@ -117,6 +120,9 @@ export class UsersController {
     }));
   }
 
+  ////////////////////
+  //ALL USERS FOR THE EXPERIMENTAL PAGE////////
+  //////////////////
   @Get("experimental")
   async getAllChance(
     @Query("limit") limit?: string,
@@ -157,8 +163,9 @@ export class UsersController {
     }
   }
 
-  // Delete a user by email provided in body (admin operation)
-
+  ////////////////////
+  //DELETE A USER/////////
+  //////////////////
   @Delete()
   @HttpCode(200)
   async deleteUser(@Body() dto: DeleteUserDto) {

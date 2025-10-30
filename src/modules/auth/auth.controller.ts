@@ -273,6 +273,9 @@ export class AuthController {
     return await this.authService.confirmEmailChange(query.token, query.email);
   }
 
+  ////////////////////
+  //FORGOT PASSWORD/////////
+  //////////////////
   @Public()
   @Post("forgot-password")
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
@@ -285,6 +288,9 @@ export class AuthController {
     };
   }
 
+  ////////////////////
+  //RESET PASSWORD/////////
+  //////////////////
   @Public()
   @Post("reset-password")
   async resetPassword(

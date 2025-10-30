@@ -14,42 +14,34 @@ import { JwtStrategy } from "./strategies/jwt.strategy";
 import { Theme } from "../themes/entities/theme.entity";
 import { ThemeService } from "../themes/themes.service";
 
-/**
- * Helper: read JWT_EXPIRES_IN from config and normalize to a concrete runtime value.
- * We prefer returning a string (like "1h" or "3600s") since that's expressive,
- * but numeric seconds are supported too. This function guarantees a non-empty value.
- */
+////////////////////
+//NORMALIZED TIME/////////
+//////////////////
 function getNormalizedExpiresIn(config: ConfigService): string {
   const raw = config.get<string | number | undefined>("JWT_EXPIRES_IN");
   if (raw === undefined || raw === null || raw === "") return "1h";
-  // If it's a number (seconds), convert to string so it's unambiguous to downstream libs.
   if (typeof raw === "number") return String(raw);
-  // it's a string (e.g., "1h", "15m", "3600"), so use as-is
   return String(raw);
 }
 
 @Module({
   imports: [
-    ConfigModule, 
+    ConfigModule,
     TypeOrmModule.forFeature([Auth, User, Theme]),
-    
+
     PassportModule.register({ defaultStrategy: "jwt", session: false }),
 
-    
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (cs: ConfigService): JwtModuleOptions => {
         const secret = cs.get<string | undefined>("JWT_SECRET");
         if (!secret) {
-          // If you want to fail early in dev when secret is missing, you could throw here.
-          // For now we'll pass undefined which will cause runtime errors if secret is missing.
+          throw new Error("JWT_SECRET is not defined in environment variables");
         }
 
         const expiresInNormalized = getNormalizedExpiresIn(cs);
 
-        // NOTE: jwt signOptions typing is strict; casting expiresIn here is a minimal compromise
-        // to satisfy TS while preserving the runtime semantics (string like '1h' or numeric string).
         return {
           secret,
           signOptions: {
@@ -59,7 +51,7 @@ function getNormalizedExpiresIn(config: ConfigService): string {
       },
     }),
   ],
-  providers: [AuthService, LocalStrategy, JwtStrategy,ThemeService],
+  providers: [AuthService, LocalStrategy, JwtStrategy, ThemeService],
   controllers: [AuthController],
   exports: [AuthService],
 })

@@ -24,6 +24,9 @@ export class ThemesController {
 
   constructor(private readonly themeService: ThemeService) {}
 
+  ////////////////////
+  //THEME OF THE CURRENT USER /////////
+  //////////////////
   @Get("me")
   async getMyTheme(@CurrentUser() user: any) {
     const email = user?.email;
@@ -35,6 +38,9 @@ export class ThemesController {
     return { ok: true, theme: row };
   }
 
+  ////////////////////
+  //PATCH THEME CHANGE/////////
+  //////////////////
   @Patch()
   async patchMyTheme(@CurrentUser() user: any, @Body() dto: UpdateThemeDto) {
     const email = user?.email;
@@ -50,6 +56,9 @@ export class ThemesController {
     return { ok: true, theme: saved };
   }
 
+  ////////////////////
+  //ADD NEW CUSTOM THEME/////////
+  //////////////////
   @Post("custom")
   async createCustom(
     @CurrentUser() user: any,
@@ -61,6 +70,9 @@ export class ThemesController {
     return { ok: true, item: result.item };
   }
 
+  ////////////////////
+  //DELETE CUSTOM THEME/////////
+  //////////////////
   @Delete("custom/:hex")
   async deleteCustom(@CurrentUser() user: any, @Param("hex") hex: string) {
     const email = user?.email;
@@ -70,6 +82,9 @@ export class ThemesController {
     return { ok: true, removed: result.removed };
   }
 
+  ////////////////////
+  //CONFIRM EMAIL CHANGE/////////
+  //////////////////
   @Get("custom")
   async listCustom(@CurrentUser() user: any) {
     const email = user?.email;
@@ -78,6 +93,9 @@ export class ThemesController {
     return { ok: true, items };
   }
 
+  ////////////////////
+  //THEME-BY-EMAIL/////////
+  //////////////////
   @Get("by-email")
   async byEmail(@Query("email") email?: string) {
     if (!email) throw new BadRequestException("email query required");
@@ -85,14 +103,9 @@ export class ThemesController {
     return { ok: true, theme: row };
   }
 
-  @Post("batch")
-  async batch(@Body() body: { emails?: string[] }) {
-    const emails = Array.isArray(body?.emails) ? body.emails.map(String) : [];
-    if (emails.length === 0) return { ok: true, items: [] };
-    const items = await this.themeService.fetchBatchByEmails(emails);
-    return { ok: true, items };
-  }
-
+  ////////////////////
+  //API END POINT FOR PIE-CHART/////////
+  //////////////////
   @Get("distribution-counts")
   async distributionCounts() {
     try {
