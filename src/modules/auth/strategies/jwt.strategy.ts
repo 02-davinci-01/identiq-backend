@@ -7,7 +7,7 @@ import { AuthService } from "../auth.service";
 export interface JwtPayload {
   sub: string;
   email?: string;
-  name?:string;
+  name?: string;
   jid: string;
   iat?: number;
   exp?: number;
@@ -28,7 +28,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, "jwt") {
   }
 
   async validate(payload: JwtPayload) {
-   
     if (!payload || !payload.sub || !payload.jid) {
       throw new UnauthorizedException("Invalid token payload");
     }
@@ -36,7 +35,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, "jwt") {
     const ok = await this.authService.isJidValid(payload.sub, payload.jid);
     if (!ok) throw new UnauthorizedException("Session invalidated");
 
-    
-    return { id: payload.sub, email: payload.email, jid: payload.jid, name:payload.name };
+    return {
+      id: payload.sub,
+      email: payload.email,
+      jid: payload.jid,
+      name: payload.name,
+    };
   }
 }

@@ -2,13 +2,13 @@ import {
   Injectable,
   ExecutionContext,
   UnauthorizedException,
-} from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-import { Reflector } from '@nestjs/core';
-import { IS_PUBLIC_KEY } from '../decorator/public.decorator';
+} from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { Reflector } from "@nestjs/core";
+import { IS_PUBLIC_KEY } from "../decorator/public.decorator";
 
 @Injectable()
-export class JwtAuthGuard extends AuthGuard('jwt') {
+export class JwtAuthGuard extends AuthGuard("jwt") {
   constructor(private readonly reflector: Reflector) {
     super();
   }
@@ -26,8 +26,9 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
   // ensure proper exception if no user found
   handleRequest(err: any, user: any, info: any) {
     if (err || !user) {
-      throw err || new UnauthorizedException('Authentication failed');
+      throw err || new UnauthorizedException("Authentication failed");
     }
+
     return user;
   }
 }
