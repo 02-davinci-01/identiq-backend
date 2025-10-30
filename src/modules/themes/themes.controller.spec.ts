@@ -1,77 +1,89 @@
-// // src/modules/themes/themes.controller.spec.ts
-// import { Test, TestingModule } from "@nestjs/testing";
-// import { ThemesController } from "./themes.controller";
-// import { ThemeService } from "./themes.service";
-// import { BadRequestException } from "@nestjs/common";
+// src/themes/themes.controller.spec.ts
+import { Test, TestingModule } from "@nestjs/testing";
+import { ThemesController } from "./themes.controller"; // <- adjust path if needed
+import { ThemeService } from "./themes.service"; // <- adjust path if needed
 
-// // Confirmed controller shape: getMyTheme(jwt) and updateMyTheme(jwt, dto)
-// // (source: src/modules/themes/themes.controller.ts). :contentReference[oaicite:4]{index=4}
+describe("ThemesController - distributionCounts", () => {
+  let controller: ThemesController;
+  let mockService: Partial<Record<keyof ThemeService, jest.Mock>>;
 
-// const themeServiceMock = {
-//   getByEmail: jest.fn(),
-//   updateByEmail: jest.fn(),
-// };
+  beforeEach(async () => {
+    // Create a mock service with only the method we need
+    mockService = {
+      getDistributionCounts: jest.fn(),
+    };
 
-// describe("ThemesController", () => {
-//   let controller: ThemesController;
+    const module: TestingModule = await Test.createTestingModule({
+      controllers: [ThemesController],
+      providers: [
+        {
+          provide: ThemeService,
+          useValue: mockService,
+        },
+      ],
+    }).compile();
 
-//   beforeEach(async () => {
-//     const module: TestingModule = await Test.createTestingModule({
-//       controllers: [ThemesController],
-//       providers: [{ provide: ThemeService, useValue: themeServiceMock }],
-//     }).compile();
+    controller = module.get<ThemesController>(ThemesController);
+  });
 
-//     controller = module.get<ThemesController>(ThemesController);
-//   });
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
 
-//   afterEach(() => jest.clearAllMocks());
+  it("returns ok + items + computed counts when service returns canonical items", async () => {
+    // Arrange: service returns canonical shape
+    const svcItems = [
+      { label: "Teal", count: 3, colorHex: "#2F6F66" },
+      { label: "Blue", count: 1, colorHex: "#2B65EC" },
+      { label: "Teal", count: 2, colorHex: "#2F6F66" }, // duplicate label to test aggregation
+    ];
+    (mockService.getDistributionCounts as jest.Mock).mockResolvedValue({
+      ok: true,
+      items: svcItems,
+    });
 
-//   it("should be defined", () => {
-//     expect(controller).toBeDefined();
-//   });
+    // Act
+    const res = await controller.distributionCounts();
 
-//   it("getMyTheme returns theme for valid jwt.email", async () => {
-//     const jwt = { email: "alice@example.com" };
-//     const fakeTheme = {
-//       email: "alice@example.com",
-//       themeId: "light",
-//       label: "Light",
-//     };
-//     (themeServiceMock.getByEmail as jest.Mock).mockResolvedValue(fakeTheme);
+    // Assert
+    expect(res).toBeDefined();
+    expect(res.ok).toBe(true);
+    // canonical items returned unchanged (same array reference shape)
+    expect(Array.isArray(res.items)).toBe(true);
+    expect(res.items).toHaveLength(3);
+    // counts aggregated by label: Teal => 5, Blue => 1
+    expect(res.counts).toEqual(expect.objectContaining({ Teal: 5, Blue: 1 }));
+  });
 
-//     const res = await controller.getMyTheme(jwt);
-//     expect(themeServiceMock.getByEmail).toHaveBeenCalledWith(
-//       "alice@example.com",
-//     );
-//     expect(res).toEqual(fakeTheme);
-//   });
+  it("returns ok with empty arrays when service returns no items (defensive)", async () => {
+    // Arrange: service returns something unexpected (no items property)
+    (mockService.getDistributionCounts as jest.Mock).mockResolvedValue({
+      ok: true,
+      items: undefined,
+    });
 
-//   it("getMyTheme throws BadRequestException when jwt has no email", async () => {
-//     await expect(controller.getMyTheme({} as any)).rejects.toThrow(
-//       BadRequestException,
-//     );
-//   });
+    // Act
+    const res = await controller.distributionCounts();
 
-//   it("updateMyTheme delegates to themeService.updateByEmail and returns result", async () => {
-//     const jwt = { email: "bob@example.com" };
-//     const dto = { themeId: "teal", colorHex: undefined };
-//     const svcRes = {
-//       ok: true,
-//       theme: { themeId: "teal", colorHex: "#2f6f66" },
-//     };
-//     (themeServiceMock.updateByEmail as jest.Mock).mockResolvedValue(svcRes);
+    // Assert
+    expect(res).toBeDefined();
+    expect(res.ok).toBe(true);
+    // items must be an array (controller normalizes it)
+    expect(Array.isArray(res.items)).toBe(true);
+    expect(res.items).toHaveLength(0);
+    expect(res.counts).toEqual({});
+  });
 
-//     const out = await controller.updateMyTheme(jwt, dto as any);
-//     expect(themeServiceMock.updateByEmail).toHaveBeenCalledWith(
-//       "bob@example.com",
-//       { themeId: dto.themeId, colorHex: dto.colorHex },
-//     );
-//     expect(out).toEqual(svcRes);
-//   });
+  it("returns ok: false and empty shapes when service throws", async () => {
+    // Arrange: service throws
+    (mockService.getDistributionCounts as jest.Mock).mockRejectedValue(
+      new Error("DB down"),
+    );
 
-//   it("updateMyTheme throws BadRequestException when jwt has no email", async () => {
-//     await expect(
-//       controller.updateMyTheme({} as any, { themeId: "x" } as any),
-//     ).rejects.toThrow(BadRequestException);
-//   });
-// });
+    // Act
+    const res = await controller.distributionCounts();
+
+    // Assert
+    expect(res).toEqual({ ok: false, items: [], counts: {} });
+  });
+});

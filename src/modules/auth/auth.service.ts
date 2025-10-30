@@ -14,7 +14,7 @@ import { MoreThan, Repository } from "typeorm";
 import { randomBytes } from "crypto";
 import * as bcrypt from "bcryptjs";
 import { ConfigService } from "@nestjs/config";
-import { BrevoService } from "src/infrastructure/integrations/brevo/brevo.service";
+import { BrevoService } from "../../infrastructure/integrations/brevo/brevo.service";
 import { Auth } from "./entities/auth.entity";
 import { JwtService } from "@nestjs/jwt";
 import { v4 as uuidv4 } from "uuid";

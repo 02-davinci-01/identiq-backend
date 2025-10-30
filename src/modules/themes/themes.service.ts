@@ -94,7 +94,6 @@ export class ThemeService {
     email: string,
     payload: { themeId: string; label: string; colorHex: string },
   ): Promise<Theme> {
-    console.log("i was hit");
     if (!email) throw new Error("email required");
     const lower = email.toLowerCase();
 

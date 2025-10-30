@@ -17,7 +17,7 @@ import { CurrentUser } from "../common/decorator/current-user-decorator";
 import { CreateCustomThemeDto } from "./dto/create-custom-theme.dto";
 import { UpdateThemeDto } from "./dto/update-theme.dto";
 
-@UseGuards(JwtAuthGuard)
+// @UseGuards(JwtAuthGuard)
 @Controller("themes")
 export class ThemesController {
   private readonly logger = new Logger(ThemesController.name);
