@@ -45,12 +45,18 @@ import * as crypto from "crypto";
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  ////////////////////
+  //REGISTER/////////
+  //////////////////
   @Public()
   @Post("register")
   async registerUser(@Body() dto: RegisterUserDTO) {
     return this.authService.register(dto);
   }
 
+  ////////////////////
+  //COMPLETE-REGISTER/////////
+  //////////////////
   @Public()
   @Post("complete-register")
   async complete(
@@ -64,19 +70,18 @@ export class AuthController {
     return this.authService.completeRegisterWithEmail(token, email, password);
   }
 
+  ////////////////////
+  //LOGIN/////////
+  //////////////////
+
   @Public()
   @UseGuards(AuthGuard("local"))
   @Post("login")
   async login(@Req() req, @Res({ passthrough: true }) res: Response) {
-    // console.log("Access Token: ", req.headers['Authorization'].split(' ')[1])
-
     const { accessToken, jid, expiresIn, user } = await this.authService.login(
       req.user,
     );
 
-    // set httpOnly refresh token cookie (long lived)
-
-    // return access token and session id and optionally user info
     return {
       accessToken,
       jid,
@@ -85,6 +90,10 @@ export class AuthController {
       message: "Login successful",
     };
   }
+
+  ////////////////////
+  //CAPTCHA/////////
+  //////////////////
 
   @Public()
   @Get("captcha")
@@ -125,6 +134,10 @@ export class AuthController {
     };
   }
 
+  ////////////////////
+  //CAPTCHA-VERIFY/////////
+  //////////////////
+
   @Public()
   @Post("captcha/verify")
   async verifyCaptchaHmac(@Body() dto: VerifyCaptchaDto) {
@@ -160,19 +173,18 @@ export class AuthController {
 
       const normalized = (answer || "").toLowerCase();
 
-      // quick length check before timing-safe compare
       if (normalized.length !== data.text.length) return { ok: false };
 
-      // timing-safe compare
       const ok = timingEqual(Buffer.from(normalized), Buffer.from(data.text));
       return { ok };
     } catch (err) {
-      // follow your project's error logging policy — e.g., log to Sentry in controller catch block
-      // (Don't re-throw internal error details to client)
-      // console.error(err);
       throw err;
     }
   }
+
+  ////////////////////
+  //LOGOUT/////////
+  //////////////////
 
   @Post("logout")
   async logout(
@@ -195,12 +207,10 @@ export class AuthController {
     return req.user;
   }
 
-  /**
-   * PATCH /auth/name
-   * Protected: uses token to find the user (email in token)
-   */
+  ////////////////////
+  //NAME CHANGE/////////
+  //////////////////
   @Patch("name")
-  // @UseGuards(JwtAuthGuard)  // not required if guard is global
   async changeName(@CurrentUser() jwt, @Body() dto: ChangeNameDto) {
     const email = jwt?.email;
     if (!email) throw new BadRequestException("No email in token");
@@ -210,13 +220,10 @@ export class AuthController {
     return { ok: true, name: res.name, email };
   }
 
-  /**
-   * PATCH /auth/password
-   * Protected: accepts new password in body; updates auth repo
-   */
-
+  ////////////////////
+  //PASSWORD CHANGE/////////
+  //////////////////
   @Patch("password")
-  // @UseGuards(JwtAuthGuard)
   async changePassword(@CurrentUser() jwt, @Body() dto: ChangePasswordDto) {
     const email = jwt?.email;
     if (!email) throw new BadRequestException("No email in token");
@@ -228,13 +235,11 @@ export class AuthController {
     return { ok: true, message: "Password updated" };
   }
 
-  /**
-   * DELETE /auth (delete account)
-   * Protected: deletes auth row and delegates removal of user & theme rows.
-   */
+  ////////////////////
+  //DELETE/////////
+  //////////////////
   @HttpCode(200)
   @Delete()
-  // @UseGuards(JwtAuthGuard)
   async deleteAccount(@CurrentUser() jwt) {
     const email = jwt?.email;
     if (!email) throw new BadRequestException("No email in token");
@@ -243,11 +248,9 @@ export class AuthController {
     return { ok: true, message: "Account deleted" };
   }
 
-  /**
-   * POST /auth/email  -> initiate change (sends verification to newEmail)
-   * Protected: current token required so we can ensure the requester is owner
-   */
-
+  ////////////////////
+  //REQUEST-EMAIL/////////
+  //////////////////
   @Post("request-email-change")
   async requestEmailChange(
     @CurrentUser() payload,
@@ -259,15 +262,10 @@ export class AuthController {
       body.newEmail,
     );
   }
-  // @UseGuards(JwtAuthGuard)
 
-  /**
-   * POST /auth/email/confirm?token=...
-   * Complete the change: token in query, newEmail and optional password in body.
-   * This endpoint performs updates to auth, user and theme repos transactionally.
-   */
-
-  // this route is intentionally public (confirmation link usually doesn't include a JWT).
+  ////////////////////
+  //CONFIRM EMAIL CHANGE/////////
+  //////////////////
   @Public()
   @Get("confirm-email-change")
   async confirmEmailChangeGet(@Query() query: ConfirmEmailChangeDto) {
