@@ -5,5 +5,14 @@
   "testRegex": ".e2e-spec.ts$",
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
-  }
+  },
+  "testTimeout": 30000,
+  "globals": {
+    "ts-jest": {
+      "tsconfig": "tsconfig.json"
+    },
+    "setupFilesAfterEnv": ["<rootDir>/test/setup-e2e.ts"]
+  },
+  "globalSetup": "<rootDir>/jest-global-setup.ts",
+  "globalTeardown": "<rootDir>/jest-global-teardown.ts"
 }
