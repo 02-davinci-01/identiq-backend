@@ -20,9 +20,9 @@ export class UsersService {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     @InjectRepository(Auth)
-    private readonly authRepo: Repository<User>,
+    private readonly authRepo: Repository<Auth>,
     @InjectRepository(Theme)
-    private readonly themeRepo: Repository<User>,
+    private readonly themeRepo: Repository<Theme>,
     private readonly dataSource: DataSource,
   ) {}
 

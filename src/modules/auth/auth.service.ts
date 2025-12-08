@@ -296,7 +296,7 @@ export class AuthService {
   /**
    * isJidValid: used by JwtStrategy
    */
-  async isJidValid(authIdStr: string, jid: string): Promise<boolean> {
+  private async isJidValid(authIdStr: string, jid: string): Promise<boolean> {
     if (!authIdStr || !jid) return false;
 
     //made it object
